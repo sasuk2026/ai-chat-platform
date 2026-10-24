@@ -50,6 +50,11 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 .msg.ai .bubble a { color: var(--primary); }
 .msg .sources { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .msg .sources a { color: var(--primary); text-decoration: none; margin-right: 10px; }
+.msg .acts { margin-top: 5px; font-size: 11px; }
+.msg .acts span { color: var(--muted); cursor: pointer; margin-right: 12px; user-select: none; }
+.msg .acts span:hover { color: var(--primary); }
+.msg.user .acts span { color: rgba(255,255,255,.75); }
+.msg.user .acts span:hover { color: #fff; }
 .empty { text-align: center; color: var(--muted); margin-top: 18vh; }
 .empty h2 { font-size: 20px; margin-bottom: 8px; color: var(--text); }
 
@@ -69,18 +74,47 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 #settings input:focus, #settings select:focus { border-color: var(--primary); }
 #settings .row { display: flex; gap: 10px; margin-top: 18px; }
 #settings .hint { font-size: 11px; color: var(--muted); margin-top: 14px; line-height: 1.6; }
+#settings textarea { width:100%; background:#2c2d33; color:#e5e7eb; border:1px solid #3b3c44; border-radius:8px; padding:9px 11px; font-size:13px; outline:none; font-family:inherit; min-height:80px; resize:vertical; }
 
 @media (max-width: 700px) {
   #sidebar { position: fixed; left: -260px; top: 0; bottom: 0; z-index: 40; transition: left .25s; }
   #sidebar.open { left: 0; box-shadow: 0 0 30px rgba(0,0,0,.2); }
   #menuBtn { display: inline-block !important; }
 }
+#plugModal, #pluginModal { position: fixed; inset: 0; background: rgba(15,17,26,.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+#pluginModal.open { display: flex; }
+#pluginModal .card { background: var(--panel); border-radius: 16px; padding: 24px; width: 520px; max-width: calc(100vw - 32px); max-height: 85vh; overflow-y: auto; }
+#pluginModal h3 { margin-bottom: 14px; }
+#plugList { margin-bottom: 14px; }
+.plug-empty { font-size: 12px; color: var(--muted); padding: 10px 0; }
+.plug-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
+.plug-item.on { border-color: var(--primary); background: #f6f6ff; }
+.plug-sw input { accent-color: var(--primary); }
+.plug-info { flex: 1; min-width: 0; }
+.plug-name { font-size: 13px; font-weight: 600; }
+.plug-desc { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plug-del { cursor: pointer; opacity: .5; }
+.plug-del:hover { opacity: 1; color: var(--danger); }
+.plug-add label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+.plug-add input, .plug-add textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; outline: none; font-family: inherit; box-sizing: border-box; }
+.plug-add input:focus, .plug-add textarea:focus { border-color: var(--primary); }
+.plug-add .row { display: flex; gap: 10px; margin-top: 12px; }
 #menuBtn { display: none; }
 #scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 39; }
 #scrim.show { display: block; }
 </style>
 </head>
 <body>
+<div id="gate" style="position:fixed;inset:0;background:#14161d;z-index:999;display:flex;align-items:center;justify-content:center;">
+  <div style="background:#1e1f24;padding:32px;border-radius:16px;width:320px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.5);">
+    <div style="font-size:40px;margin-bottom:10px;">🔒</div>
+    <div style="color:#e5e7eb;font-size:16px;font-weight:600;margin-bottom:6px;">AI Chat Platform</div>
+    <div style="color:#8a90a3;font-size:12px;margin-bottom:16px;">请输入访问密码</div>
+    <input id="gatePwd" type="password" placeholder="密码" style="width:100%;background:#2c2d33;color:#e5e7eb;border:1px solid #3b3c44;border-radius:10px;padding:10px 12px;font-size:14px;outline:none;text-align:center;">
+    <button id="gateGo" style="width:100%;margin-top:12px;background:#6366f1;color:#fff;border:none;border-radius:10px;padding:10px;font-size:14px;cursor:pointer;">解锁</button>
+    <div id="gateErr" style="color:#f87171;font-size:12px;margin-top:8px;min-height:16px;"></div>
+  </div>
+</div>
 <div id="app">
   <div id="scrim"></div>
   <div id="sidebar">
@@ -96,6 +130,7 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
       <button class="btn" id="menuBtn">☰</button>
       <span class="title" id="title">新对话</span>
       <label class="search-toggle"><input type="checkbox" id="searchToggle">🌐 联网搜索</label>
+      <button class="btn" id="plugBtn" style="margin-left:8px;"><span id="plugCount">🔌 插件</span></button>
     </div>
     <div id="msgs"></div>
     <div id="inputbar">
@@ -105,6 +140,29 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
         <button class="btn primary" id="sendBtn">发送</button>
         <button class="btn" id="stopBtn" style="display:none;">■ 停止</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="pluginModal">
+  <div class="card">
+    <h3>🔌 插件（个性化设定，可多选叠加）</h3>
+    <div id="plugList"></div>
+    <div class="plug-add">
+      <label>插件名称</label>
+      <input id="p-name" placeholder="例如：猫娘人设 / 古文翻译官">
+      <label>从网址导入（粘贴人设/规则页链接）</label>
+      <div style="display:flex;gap:8px;">
+        <input id="p-url" placeholder="https://..." style="flex:1;">
+        <button class="btn" id="p-fetch">抓取</button>
+      </div>
+      <label>或直接输入设定内容</label>
+      <textarea id="p-content" rows="4" placeholder="例如：你是一个毒舌但心地善良的助手，回答简洁带梗…"></textarea>
+      <div class="row">
+        <button class="btn primary" id="p-add">＋ 添加插件</button>
+        <button class="btn" id="p-close">关闭</button>
+      </div>
+      <div id="p-status" style="font-size:12px;margin-top:8px;display:none;"></div>
     </div>
   </div>
 </div>
@@ -120,6 +178,8 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
     <input id="s-model" placeholder="gpt-4o-mini">
     <label>Temperature (0-2)</label>
     <input id="s-temp" type="number" step="0.1" min="0" max="2" value="0.7">
+    <label>系统提示词（System Prompt，自定义 AI 人设/规则）</label>
+    <textarea id="s-sys" placeholder="例如：你是一个专业的安全审计助手…"></textarea>
     <label>搜索引擎</label>
     <select id="s-engine">
       <option value="duckduckgo">DuckDuckGo</option>
@@ -143,6 +203,55 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 </div>
 
 <script>
+/* ================= 访问门禁（sessionStorage 记忆，输对后本次会话不再问） ================= */
+(function gate() {
+  if (sessionStorage.getItem('aicp_gate') === 'ok') { const g = document.getElementById('gate'); if (g) g.remove(); return; }
+  const inp = document.getElementById('gatePwd');
+  function go() {
+    if (inp.value === '834298') {
+      sessionStorage.setItem('aicp_gate', 'ok');
+      document.getElementById('gate').remove();
+    } else {
+      document.getElementById('gateErr').textContent = '❌ 密码错误，请重试';
+      inp.value = ''; inp.focus();
+    }
+  }
+  document.getElementById('gateGo').onclick = go;
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  inp.focus();
+})();
+
+/* ================= 插件系统 ================= */
+let plugins = JSON.parse(localStorage.getItem('aicp_plugins') || '[]');
+function savePlugins() { localStorage.setItem('aicp_plugins', JSON.stringify(plugins)); }
+function activePlugins() { return plugins.filter(p => p.enabled && p.content.trim()); }
+function renderPlugins() {
+  const box = $('#plugList');
+  box.innerHTML = '';
+  if (!plugins.length) { box.innerHTML = '<div class="plug-empty">还没有插件，从上方添加一个吧</div>'; return; }
+  plugins.forEach(p => {
+    const d = document.createElement('div');
+    d.className = 'plug-item' + (p.enabled ? ' on' : '');
+    const sw = document.createElement('label');
+    sw.className = 'plug-sw';
+    sw.innerHTML = '<input type="checkbox" ' + (p.enabled ? 'checked' : '') + '>';
+    sw.querySelector('input').onchange = e => { p.enabled = e.target.checked; savePlugins(); renderPlugins(); renderPlugBadge(); };
+    const info = document.createElement('div');
+    info.className = 'plug-info';
+    info.innerHTML = '<div class="plug-name">' + esc(p.name) + '</div><div class="plug-desc">' + esc((p.content.slice(0, 60) + (p.content.length > 60 ? '…' : ''))) + '</div>';
+    const del = document.createElement('span');
+    del.className = 'plug-del'; del.textContent = '🗑';
+    del.onclick = () => { plugins = plugins.filter(x => x.id !== p.id); savePlugins(); renderPlugins(); renderPlugBadge(); };
+    d.appendChild(sw); d.appendChild(info); d.appendChild(del);
+    box.appendChild(d);
+  });
+}
+function renderPlugBadge() {
+  const n = activePlugins().length;
+  $('#plugCount').textContent = n ? '🔌 ' + n : '🔌 插件';
+}
+function openPlugins() { $('#pluginModal').classList.add('open'); renderPlugins(); }
+
 /* ================= 存储层 ================= */
 const Store = {
   get settings() {
@@ -168,7 +277,7 @@ const Store = {
 /* ================= 状态 ================= */
 let settings = Object.assign({
   apiBase: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.7,
-  searchEngine: 'duckduckgo', proxy: '',
+  searchEngine: 'duckduckgo', proxy: '', sysPrompt: '',
 }, Store.settings);
 let conv = null;
 let busy = false;
@@ -226,9 +335,10 @@ function renderConvs() {
     box.appendChild(d);
   });
 }
-function msgEl(m) {
+function msgEl(m, idx) {
   const d = document.createElement('div');
   d.className = 'msg ' + (m.role === 'user' ? 'user' : 'ai');
+  d.dataset.idx = idx;
   const who = document.createElement('div');
   who.className = 'who'; who.textContent = m.role === 'user' ? '你' : 'AI';
   const b = document.createElement('div');
@@ -244,7 +354,54 @@ function msgEl(m) {
     }
   }
   d.appendChild(who); d.appendChild(b);
+  // 操作按钮（仅历史消息，流式中的占位不显示）
+  if (typeof idx === 'number') {
+    const acts = document.createElement('div');
+    acts.className = 'acts';
+    if (m.role === 'assistant') {
+      const re = document.createElement('span');
+      re.textContent = '🔄 重新生成';
+      re.onclick = () => regenerate(idx);
+      acts.appendChild(re);
+    } else {
+      const ed = document.createElement('span');
+      ed.textContent = '✏️ 编辑重问';
+      ed.onclick = () => editUser(idx);
+      acts.appendChild(ed);
+    }
+    d.appendChild(acts);
+  }
   return d;
+}
+
+// 重新生成：丢弃该条回复及之后内容，基于其上一条用户提问重新生成
+function regenerate(idx) {
+  if (busy) return;
+  const msgs = conv.messages;
+  if (!msgs[idx] || msgs[idx].role !== 'assistant') return;
+  let u = idx - 1;
+  while (u >= 0 && msgs[u].role !== 'user') u--;
+  if (u < 0) return;
+  const userText = msgs[u].content;
+  conv.messages = msgs.slice(0, u + 1);   // 保留到该提问为止，旧回复彻底丢弃
+  Store.saveConv(conv); renderMsgs(); renderConvs();
+  generate(userText, false);
+}
+
+// 编辑重问：丢弃该提问及之后内容，内容填回输入框，重新发送时按首次生成处理
+function editUser(idx) {
+  if (busy) return;
+  const msgs = conv.messages;
+  if (!msgs[idx] || msgs[idx].role !== 'user') return;
+  const text = msgs[idx].content;
+  conv.messages = msgs.slice(0, idx);
+  Store.saveConv(conv); renderMsgs(); renderConvs();
+  const input = $('#input');
+  input.value = text;
+  input.focus();
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  setStatus('✏️ 已回到该提问之前，修改后回车重新发送（作为全新提问）');
 }
 function renderMsgs() {
   const box = $('#msgs');
@@ -253,7 +410,7 @@ function renderMsgs() {
     box.innerHTML = '<div class="empty"><h2>🤖 开始新的对话</h2><p>先点左下角 ⚙️ 设置 填入你的 OpenAI 协议 API 地址和 Key</p></div>';
     return;
   }
-  conv.messages.forEach(m => box.appendChild(msgEl(m)));
+  conv.messages.forEach((m, i) => box.appendChild(msgEl(m, i)));
   box.scrollTop = box.scrollHeight;
 }
 function setStatus(t) { $('#status').textContent = t || ''; }
@@ -266,21 +423,29 @@ async function send() {
   if (!text) return;
   if (!settings.apiBase || !settings.apiKey) { setStatus('⚠️ 请先点击左下角 ⚙️ 设置 配置 API 地址和 Key'); openSettings(); return; }
   input.value = ''; input.style.height = 'auto';
-  busy = true; stopFlag = false;
-  controller = new AbortController();
-  $('#sendBtn').style.display = 'none'; $('#stopBtn').style.display = '';
-  setStatus('');
-
   conv.messages.push({ role: 'user', content: text });
   if (conv.title === '新对话') {
     conv.title = text.slice(0, 20) + (text.length > 20 ? '…' : '');
     renderTitle();
   }
-  renderMsgs(); Store.saveConv(conv); renderConvs();
+  Store.saveConv(conv); renderConvs();
+  await generate(text, true);
+}
+
+async function generate(text, isFreshSend) {
+  if (busy) return;
+  busy = true; stopFlag = false;
+  controller = new AbortController();
+  $('#sendBtn').style.display = 'none'; $('#stopBtn').style.display = '';
+  setStatus('');
+  if (isFreshSend) renderMsgs();
 
   const searchOn = $('#searchToggle').checked;
   let sources = [];
   const messages = [];
+  // 自定义系统提示词
+  const sys = (settings.sysPrompt || '').trim();
+  if (sys) messages.push({ role: 'system', content: sys });
   if (searchOn) {
     setStatus('🌐 正在搜索网页…');
     try {
@@ -298,6 +463,12 @@ async function send() {
     }
     setStatus('');
   }
+  // 叠加启用的插件（个性化设定，多个同时生效）
+  const ap = activePlugins();
+  if (ap.length) {
+    messages.push({ role: 'system', content: '【用户个性化设定（请严格遵守）】\n' + ap.map((p, i) => '◆ 插件「' + p.name + '」：\n' + p.content).join('\n\n') });
+  }
+  // 只发送当前保留的历史（编辑/重生后旧内容已从 conv.messages 中移除，模型看不到）
   conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
 
   const box = $('#msgs');
@@ -307,6 +478,7 @@ async function send() {
   box.scrollTop = box.scrollHeight;
 
   let acc = '';
+  let think = '';
   try {
     const resp = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -334,9 +506,17 @@ async function send() {
         try {
           const j = JSON.parse(data);
           if (j.error) { acc += (acc ? '\n\n' : '') + '❌ ' + j.error; }
-          const d = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
-          if (d) acc += d;
-          el.querySelector('.bubble').innerHTML = renderMD(acc);
+          const dl = j.choices && j.choices[0] && j.choices[0].delta || {};
+          if (dl.reasoning_content) {
+            think = (think || '') + dl.reasoning_content;
+          }
+          if (dl.content) { acc += dl.content; }
+          const bubble = el.querySelector('.bubble');
+          let html = '';
+          if (think && !acc) html = '<div style="color:#8a90a3;font-style:italic;font-size:12.5px;white-space:pre-wrap;">💭 ' + esc(think.slice(-400)) + '</div>';
+          else if (think && acc) html = '<details style="margin-bottom:6px;"><summary style="font-size:12px;color:#8a90a3;cursor:pointer;">💭 已深度思考（点击展开）</summary><div style="color:#8a90a3;font-size:12px;white-space:pre-wrap;border-left:2px solid #d5d9e6;padding-left:8px;margin-top:6px;">' + esc(think.slice(0,2000)) + '</div></details>';
+          html += renderMD(acc);
+          bubble.innerHTML = html;
           box.scrollTop = box.scrollHeight;
         } catch {}
       }
@@ -347,14 +527,15 @@ async function send() {
   ph.content = acc || '(已停止)';
   ph.sources = sources;
   el.remove();
-  box.appendChild(msgEl(ph));
-  box.scrollTop = box.scrollHeight;
   conv.messages.push(ph);
+  box.appendChild(msgEl(ph, conv.messages.length - 1));
+  box.scrollTop = box.scrollHeight;
   Store.saveConv(conv); renderConvs();
   busy = false;
   $('#sendBtn').style.display = ''; $('#stopBtn').style.display = 'none';
   setStatus('');
 }
+window.send = send;
 
 /* ================= 设置 ================= */
 function openSettings() {
@@ -364,6 +545,7 @@ function openSettings() {
   $('#s-temp').value = settings.temperature;
   $('#s-engine').value = settings.searchEngine || 'duckduckgo';
   $('#s-proxy').value = settings.proxy || '';
+  $('#s-sys').value = settings.sysPrompt || '';
   $('#settings').classList.add('open');
 }
 function closeSettings() { $('#settings').classList.remove('open'); }
@@ -394,6 +576,7 @@ function saveSettings() {
     temperature: parseFloat($('#s-temp').value) || 0.7,
     searchEngine: $('#s-engine').value,
     proxy: $('#s-proxy').value.trim(),
+    sysPrompt: $('#s-sys').value,
   };
   Store.saveSettings(settings);
   closeSettings();
@@ -407,6 +590,35 @@ $('#newBtn').onclick = () => { newConv(); closeSidebar(); };
 $('#cfgBtn').onclick = () => openSettings();
 $('#saveBtn').onclick = saveSettings;
 $('#testBtn').onclick = testConn;
+$('#plugBtn').onclick = openPlugins;
+$('#p-close').onclick = () => $('#pluginModal').classList.remove('open');
+$('#pluginModal').addEventListener('click', e => { if (e.target.id === 'pluginModal') e.target.classList.remove('open'); });
+$('#p-fetch').onclick = async () => {
+  const st = $('#p-status');
+  st.style.display = 'block'; st.style.color = 'var(--muted)'; st.textContent = '抓取中…';
+  try {
+    const r = await fetch('/api/fetch-url', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: $('#p-url').value.trim(), proxy: settings.proxy }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      $('#p-content').value = j.content;
+      st.textContent = '✅ 抓取成功（' + j.length + ' 字），填好名称后点「添加插件」';
+      st.style.color = '#16a34a';
+      if (!$('#p-name').value.trim()) $('#p-name').value = $('#p-url').value.replace(/^https?:\/\//, '').split('/')[0];
+    } else { st.textContent = '❌ ' + j.error; st.style.color = '#dc2626'; }
+  } catch (e) { st.textContent = '❌ ' + e.message; st.style.color = '#dc2626'; }
+};
+$('#p-add').onclick = () => {
+  const name = $('#p-name').value.trim() || '未命名插件';
+  const content = $('#p-content').value.trim();
+  if (!content) { const st = $('#p-status'); st.style.display = 'block'; st.style.color = '#dc2626'; st.textContent = '❌ 设定内容不能为空'; return; }
+  plugins.push({ id: uid(), name, content, enabled: true });
+  savePlugins(); renderPlugins(); renderPlugBadge();
+  $('#p-name').value = ''; $('#p-content').value = ''; $('#p-url').value = '';
+  const st = $('#p-status'); st.style.display = 'block'; st.style.color = '#16a34a'; st.textContent = '✅ 插件已添加并启用';
+};
 $('#cancelBtn').onclick = closeSettings;
 $('#sendBtn').onclick = send;
 $('#stopBtn').onclick = () => { stopFlag = true; if (controller) controller.abort(); };
@@ -423,6 +635,7 @@ input.addEventListener('input', () => {
 });
 
 newConv();
+renderPlugBadge();
 fetch('/api/agentos-status').then(r => r.json()).then(j => {
   if (j.agentos) setStatus('💡 平台已内置 Agno AgentOS 智能体接口（/agno）');
 }).catch(() => {});

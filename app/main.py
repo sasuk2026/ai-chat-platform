@@ -10,6 +10,7 @@
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -21,6 +22,23 @@ from .search import web_search
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="AI Chat Platform", docs_url="/docs")
+
+def normalize_endpoint(api_base: str, action: str = "chat/completions"):
+    """兼容两种填法：
+    1. Base 地址： https://host/v1            -> https://host/v1/chat/completions
+    2. 完整接口： https://host/v1/chat/completions?sharecode=x&ig_key=y
+       （保留全部查询参数，仅拼接 action）
+    """
+    api_base = api_base.strip().rstrip("/")
+    parts = urlsplit(api_base)
+    path = parts.path or ""
+    if path.endswith("/chat/completions"):
+        path = path[: -len("/chat/completions")]
+    if path.endswith("/models"):
+        path = path[: -len("/models")]
+    url = urlunsplit((parts.scheme, parts.netloc, path.rstrip("/") + "/" + action, parts.query, ""))
+    return url
+
 
 # ---------------- OpenAI 协议流式透传 ----------------
 @app.post("/api/chat")
@@ -61,9 +79,10 @@ async def chat(request: Request):
 
     async def gen():
         try:
+            url = normalize_endpoint(api_base, "chat/completions")
             async with httpx.AsyncClient(timeout=180) as client:
                 async with client.stream(
-                    "POST", api_base + "/chat/completions",
+                    "POST", url,
                     json=payload, headers=headers,
                 ) as resp:
                     if resp.status_code >= 300:
@@ -83,6 +102,36 @@ async def chat(request: Request):
     )
 
 
+# ---------------- 抓取网址内容（插件源，绕过 CORS） ----------------
+@app.post("/api/fetch-url")
+async def fetch_url(request: Request):
+    from .search import UA
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    proxy = body.get("proxy") or ""
+    if not url.startswith(("http://", "https://")):
+        return JSONResponse({"ok": False, "error": "URL 需以 http(s):// 开头"})
+    if "{url}" in proxy:
+        from urllib.parse import quote
+        url = proxy.replace("{url}", quote(url, safe=""))
+    try:
+        import re as _re
+        from html import unescape as _u
+        async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
+            r = await client.get(url, headers=UA)
+            r.raise_for_status()
+            text = r.text
+            # 若为 HTML，抽取正文纯文本
+            if "<" in text[:2000]:
+                text = _re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\\1>", " ", text)
+                text = _re.sub(r"(?s)<[^>]+>", "\n", text)
+                text = _u(_re.sub(r"\n{3,}", "\n\n", text))
+            text = text.strip()[:20000]
+            return JSONResponse({"ok": True, "length": len(text), "content": text})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
 # ---------------- 配置诊断：用你的 key 调 /models，返回服务商原始响应 ----------------
 @app.post("/api/test-config")
 async def test_config(request: Request):
@@ -96,7 +145,7 @@ async def test_config(request: Request):
         headers["Authorization"] = "Bearer " + key.strip()
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(base + "/models", headers=headers)
+            r = await client.get(normalize_endpoint(base, "models"), headers=headers)
             text = r.text[:300]
             models = []
             try:
