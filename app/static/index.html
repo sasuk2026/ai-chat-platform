@@ -283,14 +283,65 @@ const PLUGIN_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'list_plugins',
+      description: '列出当前已安装的所有插件（名称、id、是否启用、正文预览）。当用户要查看、修改、删除某个插件，或你不确定插件叫什么名字时，必须先调用它。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_plugin',
+      description: '修改已安装的插件：可改插件名称、开关启用状态，或修改插件正文（设定内容）里的某项参数值。当用户要求「改一下插件的某个参数」「把插件里的 X 改成 Y」「调整插件设定」「重命名插件」「开启/关闭某插件」时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: '要修改的插件名称或 id，支持部分匹配（建议先用 list_plugins 查看）' },
+          operation: {
+            type: 'string',
+            description: '操作类型',
+            enum: ['replace', 'set_content', 'append', 'rename', 'set_enabled'],
+          },
+          old_text: { type: 'string', description: 'operation=replace 时必填：插件正文中要被替换的原始文本片段，必须原样给出（含大小写与标点）' },
+          new_text: { type: 'string', description: 'replace: 替换后的新文本；append: 要追加的内容；set_content: 完整新正文；rename: 新的插件名称' },
+          enabled: { type: 'boolean', description: 'operation=set_enabled 时：true 启用，false 停用' },
+        },
+        required: ['target', 'operation'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_plugin',
+      description: '删除一个已安装的插件。当用户明确要求卸载/删掉某个插件时使用。',
+      parameters: {
+        type: 'object',
+        properties: { target: { type: 'string', description: '插件名称或 id，支持部分匹配' } },
+        required: ['target'],
+      },
+    },
+  },
 ];
 
-const PLUGIN_TOOL_SYS = '你拥有在对话中为用户安装插件的能力，可使用两个工具：\n' +
+const PLUGIN_TOOL_SYS = '你拥有在对话中为用户管理插件的能力，可使用五个工具：\n' +
   '1) search_github_plugins：在 GitHub 搜索相关插件/工具/仓库，返回候选列表（含 full_name、描述、星标、主题）。\n' +
-  '2) install_plugin：把指定 GitHub 仓库安装为当前对话的插件（其仓库内容会自动成为你的对话设定）。\n\n' +
-  '【何时使用】只有当用户「明确表达要安装/添加/找一个插件或某种能力」时才使用，例如：「帮我装一个翻译插件」「加个画思维导图的」「找个能写周报的插件」「安装一个可以识别图片的插件」。\n' +
-  '【如何使用】先 search_github_plugins 找候选 → 根据描述/星标/主题挑选最相关的一个 → 再 install_plugin 安装 → 最后用一句话告诉用户你装了哪个、它能做什么。\n' +
-  '【不要使用】若用户只是普通聊天、提问或闲聊，不要调用任何工具，正常回答即可。';
+  '2) install_plugin：把指定 GitHub 仓库安装为当前对话的插件（其仓库内容会自动成为你的对话设定）。\n' +
+  '3) list_plugins：列出当前已安装的所有插件（名称、id、是否启用、正文预览）。\n' +
+  '4) update_plugin：修改已安装插件——改名、开关启用、或修改正文里的某项参数值。\n' +
+  '5) delete_plugin：删除一个已安装的插件。\n\n' +
+  '【何时使用】\n' +
+  '- 安装：只有当用户「明确表达要安装/添加/找一个插件或某种能力」时才使用，例如：「帮我装一个翻译插件」「加个画思维导图的」「找个能写周报的插件」。流程：先 search_github_plugins → 挑最相关的一个 → install_plugin → 用一句话告诉用户装了哪个、能做什么。\n' +
+  '- 修改/删除：当用户要求改动插件时使用，例如：「把这个插件的 X 参数改成 Y」「插件里那个角色改成老师」「让它别再强调那一点」「关掉翻译插件」「删掉这个插件」「把插件改名叫XX」。\n' +
+  '- 不要使用：若用户只是普通聊天、提问或闲聊，不要调用任何工具，正常回答即可。\n\n' +
+  '【修改插件的正确做法（重要）】\n' +
+  'a) 先调 list_plugins 确认插件存在，并从 content_preview 看清正文里的相关片段原文。\n' +
+  'b) 改某项参数值：用 operation="replace"，old_text 必须按正文中出现的原文一字不改地给出（含大小写、标点、换行），new_text 为改好的新文本。若记不准原文，宁可先用 "append" 追加新设定，或向用户确认，也不要猜。\n' +
+  'c) 整体重写：用 operation="set_content"，new_text 给完整新正文。追加规则：用 "append"。改名："rename"。开关："set_enabled" 配 enabled。\n' +
+  'd) 改完后用一句话告诉用户改了哪里、现在是什么值。修改后的插件会在用户下一次发送消息时自动生效。';
 
 // 调用 /api/chat 并解析 SSE：实时渲染文本，同时累积 tool_calls
 async function runChatStream(messages, tools, el, box) {
@@ -356,7 +407,18 @@ async function runChatStream(messages, tools, el, box) {
   return { content: acc, toolCalls: tcAcc.filter(Boolean), error: null };
 }
 
-// 执行 AI 发出的工具调用：搜索 GitHub / 安装插件
+// 按名称/id 查找插件（支持精确匹配与包含匹配）
+function findPlugin(target) {
+  const t = String(target || '').trim().toLowerCase();
+  if (!t) return null;
+  return plugins.find(p => String(p.id) === t)
+      || plugins.find(p => (p.name || '').toLowerCase() === t)
+      || plugins.find(p => (p.name || '').toLowerCase().indexOf(t) >= 0)
+      || plugins.find(p => (p.source || '').toLowerCase().indexOf(t) >= 0)
+      || null;
+}
+
+// 执行 AI 发出的工具调用：搜索 GitHub / 安装插件 / 查看·修改·删除插件
 async function executePluginTool(tc, el, box) {
   const name = (tc.function && tc.function.name) || '';
   let args = {};
@@ -397,6 +459,68 @@ async function executePluginTool(tc, el, box) {
           const bubble = el.querySelector('.bubble');
           if (bubble) bubble.innerHTML = renderMD('✅ 已安装插件「' + fn + '」（抓取 ' + (j.files || []).join(', ') + '，' + j.length + ' 字，已启用）');
         }
+      }
+    } else if (name === 'list_plugins') {
+      if (!plugins.length) {
+        resultText = JSON.stringify({ count: 0, plugins: [], note: '当前没有安装任何插件' });
+      } else {
+        const slim = plugins.map(function (p) {
+          return {
+            id: p.id, name: p.name, enabled: !!p.enabled, source: p.source || '',
+            content_length: (p.content || '').length,
+            content_preview: (p.content || '').slice(0, 400),
+          };
+        });
+        resultText = JSON.stringify({ count: plugins.length, plugins: slim }, null, 2);
+      }
+    } else if (name === 'update_plugin') {
+      const p = findPlugin(args.target);
+      if (!p) { resultText = JSON.stringify({ error: '没有找到匹配的插件：' + args.target }); }
+      else {
+        const op = args.operation || '';
+        let doneMsg = '';
+        if (op === 'replace') {
+          const oldT = args.old_text || '';
+          const newT = (args.new_text === undefined || args.new_text === null) ? '' : args.new_text;
+          if (!oldT) { resultText = JSON.stringify({ error: 'operation=replace 需要提供 old_text' }); }
+          else if ((p.content || '').indexOf(oldT) < 0) {
+            resultText = JSON.stringify({ error: '在插件正文中没有找到该片段，请先用 list_plugins 查看正文原文，再按原文一字不差地替换', not_found: oldT.slice(0, 200) });
+          } else {
+            p.content = (p.content || '').split(oldT).join(newT);
+            doneMsg = '✅ 已修改插件「' + p.name + '」：\n\n「' + oldT.slice(0, 80) + '」→「' + String(newT).slice(0, 80) + '」';
+          }
+        } else if (op === 'set_content') {
+          p.content = args.new_text || '';
+          doneMsg = '✅ 已重写插件「' + p.name + '」的正文（' + p.content.length + ' 字）';
+        } else if (op === 'append') {
+          p.content = (p.content || '') + '\n\n' + (args.new_text || '');
+          doneMsg = '✅ 已向插件「' + p.name + '」追加新设定';
+        } else if (op === 'rename') {
+          const oldN = p.name; p.name = args.new_text || '';
+          doneMsg = '✅ 插件已改名：「' + oldN + '」→「' + p.name + '」';
+        } else if (op === 'set_enabled') {
+          p.enabled = args.enabled !== false;
+          doneMsg = '✅ 插件「' + p.name + '」已' + (p.enabled ? '启用' : '停用');
+        } else {
+          resultText = JSON.stringify({ error: '未知 operation：' + op });
+        }
+        if (doneMsg) {
+          savePlugins(); renderPlugins(); renderPlugBadge();
+          resultText = JSON.stringify({ updated: true, name: p.name, enabled: !!p.enabled, content_length: (p.content || '').length });
+          const bubble = el.querySelector('.bubble');
+          if (bubble) bubble.innerHTML = renderMD(doneMsg + '\n\n（下次发送时生效）');
+        }
+      }
+    } else if (name === 'delete_plugin') {
+      const p = findPlugin(args.target);
+      if (!p) { resultText = JSON.stringify({ error: '没有找到匹配的插件：' + args.target }); }
+      else {
+        const oldN = p.name;
+        plugins = plugins.filter(function (x) { return x.id !== p.id; });
+        savePlugins(); renderPlugins(); renderPlugBadge();
+        resultText = JSON.stringify({ deleted: true, name: oldN });
+        const bubble = el.querySelector('.bubble');
+        if (bubble) bubble.innerHTML = renderMD('🗑 已删除插件「' + oldN + '」');
       }
     } else {
       resultText = JSON.stringify({ error: '未知工具: ' + name });
@@ -735,8 +859,8 @@ async function generate(text, isFreshSend) {
       if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error; break; }
       if (r.content) finalText += r.content;
       if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束
-      // 执行工具（搜索 GitHub / 安装插件）
-      setStatus('🔌 正在 GitHub 查找并安装插件…');
+      // 执行工具（搜索 GitHub / 安装 / 查看 / 修改 / 删除插件）
+      setStatus('🔌 正在处理插件（查找 / 安装 / 修改）…');
       const tms = [];
       for (const tc of r.toolCalls) tms.push(await executePluginTool(tc, el, box));
       messages.push({ role: 'assistant', content: r.content || '', tool_calls: r.toolCalls });
