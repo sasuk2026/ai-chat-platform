@@ -83,6 +83,33 @@ async def chat(request: Request):
     )
 
 
+# ---------------- 配置诊断：用你的 key 调 /models，返回服务商原始响应 ----------------
+@app.post("/api/test-config")
+async def test_config(request: Request):
+    body = await request.json()
+    base = (body.get("apiBase") or "").rstrip("/")
+    key = body.get("apiKey") or ""
+    if not base:
+        return JSONResponse({"ok": False, "error": "未填 API 地址"})
+    headers = {}
+    if key:
+        headers["Authorization"] = "Bearer " + key.strip()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(base + "/models", headers=headers)
+            text = r.text[:300]
+            models = []
+            try:
+                ms = (r.json().get("data") or [])
+                models = [m.get("id") for m in ms][:10]
+            except Exception:
+                pass
+            return JSONResponse({"ok": r.status_code == 200, "status": r.status_code,
+                                 "provider_response": text, "sample_models": models})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
 # ---------------- 网页搜索 ----------------
 @app.post("/api/search")
 async def search(request: Request):

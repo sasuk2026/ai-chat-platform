@@ -135,8 +135,10 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
     </div>
     <div class="row">
       <button class="btn primary" id="saveBtn">保存</button>
+      <button class="btn" id="testBtn">🔍 测试连接</button>
       <button class="btn" id="cancelBtn">取消</button>
     </div>
+    <div id="testResult" style="margin-top:12px;font-size:12px;line-height:1.6;white-space:pre-wrap;display:none;"></div>
   </div>
 </div>
 
@@ -365,6 +367,25 @@ function openSettings() {
   $('#settings').classList.add('open');
 }
 function closeSettings() { $('#settings').classList.remove('open'); }
+async function testConn() {
+  const box = $('#testResult');
+  box.style.display = 'block';
+  box.textContent = '🔍 正在测试连接…';
+  try {
+    const r = await fetch('/api/test-config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiBase: $('#s-base').value.trim(), apiKey: $('#s-key').value.trim() }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      box.textContent = '✅ 连接成功！key 有效。可用模型示例：\n' + (j.sample_models || []).join('\n') + '\n（请把下面的"模型"框填成上列表之一）';
+      box.style.color = '#16a34a';
+    } else {
+      box.textContent = '❌ 状态码 ' + (j.status || '') + '\n服务商响应：' + (j.provider_response || j.error);
+      box.style.color = '#dc2626';
+    }
+  } catch (e) { box.textContent = '❌ ' + e.message; box.style.color = '#dc2626'; }
+}
 function saveSettings() {
   settings = {
     apiBase: $('#s-base').value.trim(),
@@ -385,6 +406,7 @@ function closeSidebar() { $('#sidebar').classList.remove('open'); $('#scrim').cl
 $('#newBtn').onclick = () => { newConv(); closeSidebar(); };
 $('#cfgBtn').onclick = () => openSettings();
 $('#saveBtn').onclick = saveSettings;
+$('#testBtn').onclick = testConn;
 $('#cancelBtn').onclick = closeSettings;
 $('#sendBtn').onclick = send;
 $('#stopBtn').onclick = () => { stopFlag = true; if (controller) controller.abort(); };
