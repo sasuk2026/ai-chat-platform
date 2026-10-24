@@ -343,23 +343,19 @@ const PLUGIN_TOOLS = [
   },
 ];
 
-const PLUGIN_TOOL_SYS = '你拥有在对话中为用户管理插件的能力，可使用五个工具：\n' +
-  '1) search_github_plugins：在 GitHub 搜索相关插件/工具/仓库，返回候选列表（含 full_name、描述、星标、主题）。\n' +
-  '2) install_plugin：把指定 GitHub 仓库安装为当前对话的插件（其仓库内容会自动成为你的对话设定）。\n' +
-  '3) list_plugins：列出当前已安装的所有插件（名称、id、是否启用、正文预览）。\n' +
-  '4) update_plugin：修改已安装插件——改名、开关启用、或修改正文里的某项参数值。\n' +
-  '5) delete_plugin：删除一个已安装的插件。\n\n' +
-  '【何时使用】\n' +
-  '- 安装：只有当用户「明确表达要安装/添加/找一个插件或某种能力」时才使用，例如：「帮我装一个翻译插件」「加个画思维导图的」「找个能写周报的插件」。流程：先 search_github_plugins → 挑最相关的一个 → install_plugin → 用一句话告诉用户装了哪个、能做什么。\n' +
-  '- 修改/删除：当用户要求改动插件时使用，例如：「把这个插件的 X 参数改成 Y」「插件里那个角色改成老师」「让它别再强调那一点」「关掉翻译插件」「删掉这个插件」「把插件改名叫XX」。\n' +
-  '- 不要使用：若用户只是普通聊天、提问或闲聊，不要调用任何工具，正常回答即可。\n\n' +
-  '【优先级（务必遵守）】用户要一个插件时，默认由你用 create_plugin 亲自撰写出来，这是首选。只有在用户明确说「从 GitHub 装」「搜仓库」「找个现成的仓库」时，才允许用 search_github_plugins + install_plugin。绝对不要在用户只是要修改/新建一个插件时去 GitHub 下载。\n' +
-  '【新建插件】用户说「写个插件 / 新建一个插件 / 帮我做一个XX插件 / 加个能XX的」时，直接调 create_plugin，并在 content 里写出完整正文（角色定位、能力范围、执行规则、输出格式、示例），name 起简短好记的名字。不要让用户自己去写。\n' +
-  '【修改插件的正确做法（重要）】\n' +
-  'a) 先调 list_plugins 确认插件存在，并从 content_preview 看清正文里的相关片段原文。\n' +
-  'b) 改某项参数值：用 operation="replace"，old_text 必须按正文中出现的原文一字不改地给出（含大小写、标点、换行），new_text 为改好的新文本。若记不准原文，宁可先用 "append" 追加新设定，或向用户确认，也不要猜。\n' +
-  'c) 整体重写：用 operation="set_content"，new_text 给完整新正文。追加规则：用 "append"。改名："rename"。开关："set_enabled" 配 enabled。\n' +
-  'd) 改完后用一句话告诉用户改了哪里、现在是什么值。修改后的插件会在用户下一次发送消息时自动生效。';
+const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个网页聊天应用里：没有终端、没有文件系统、不能执行任何命令。绝对禁止输出 find / ls / cat / grep 等 shell 命令去"查找或修改插件"——这些代码不会被执行，用户只会看到一堆没用的代码。\n' +
+'你可以管理用户的插件（新建 / 修改 / 删除 / 查看）。如果你能使用工具调用（function calling）就直接用工具；否则输出下面的指令块（前端会自动执行并把结果回传给你）：\n' +
+'<<<PLUGIN\n{"action":"list"}\nPLUGIN>>>\n' +
+'<<<PLUGIN\n{"action":"create","name":"插件名","content":"完整插件正文"}\nPLUGIN>>>\n' +
+'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"set_content","content":"完整新正文"}\nPLUGIN>>>\n' +
+'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"append","content":"追加的内容"}\nPLUGIN>>>\n' +
+'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"rename","new_name":"新名字"}\nPLUGIN>>>\n' +
+'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"set_enabled","enabled":false}\nPLUGIN>>>\n' +
+'<<<PLUGIN\n{"action":"delete","target":"插件名"}\nPLUGIN>>>\n\n' +
+'【动作说明】create=新建插件（content 由你亲自撰写完整正文：角色、能力、规则、输出格式）；update 的 mode：set_content 整体重写 / append 追加 / rename 改名 / set_enabled 开关；delete=删除。指令块里必须是合法 JSON（content 里的换行要写成 \\n 转义）。\n' +
+'【默认行为（重要）】用户要写/新建/修改/删除插件时，由你直接输出指令块，正文内容你自己完整撰写，不要让用户自己写。只有用户明确说「从 GitHub 装」「搜仓库」时才用 search_github_plugins / install_plugin 工具，否则禁止去 GitHub 下载。\n' +
+'【修改插件的推荐流程】先输出 {"action":"list"} 拿到全部插件全文 → 再基于全文用 mode="set_content" 输出改好的完整新正文（最可靠），或 append 追加新设定。执行结果系统会回传给你，你再向用户确认。\n' +
+'【禁止】不要输出任何 shell 命令，不要假装在运行程序，不要说"我无法修改"。你完全可以修改插件——用指令块。';
 
 // 调用 /api/chat 并解析 SSE：实时渲染文本，同时累积 tool_calls
 async function runChatStream(messages, tools, el, box) {
@@ -443,6 +439,56 @@ function tryReplaceContent(text, oldT, newT) {
     }
   }
   return null;
+}
+
+// 解析 AI 回复中的 <<<PLUGIN ... PLUGIN>>> 指令块（文本协议，不依赖 function calling）
+function extractPluginActions(text) {
+  const re = /<<<\s*PLUGIN\s*([\s\S]*?)\s*PLUGIN\s*>>>/g;
+  const actions = [];
+  let m;
+  while ((m = re.exec(String(text || '')))) {
+    try { actions.push(JSON.parse(m[1])); } catch (e) {}
+  }
+  return { actions: actions, cleaned: String(text || '').replace(re, '').trim() };
+}
+
+// 执行一条文本协议插件指令
+function applyPluginAction(a) {
+  if (!a || !a.action) return '（无效指令：缺少 action）';
+  try {
+    if (a.action === 'list') {
+      if (!plugins.length) return '当前没有任何插件。';
+      return JSON.stringify(plugins.map(function (p) {
+        return { name: p.name, enabled: !!p.enabled, content_length: (p.content || '').length, content: (p.content || '').slice(0, 9000) };
+      }));
+    }
+    if (a.action === 'create') {
+      const nm = (a.name || '').trim(), ct = a.content || '';
+      if (!nm || !ct.trim()) return '创建失败：缺少 name 或 content';
+      plugins.push({ id: uid(), name: nm, content: ct, enabled: a.enabled !== false, source: 'AI 创建' });
+      savePlugins(); renderPlugins(); renderPlugBadge();
+      return '✅ 已创建插件「' + nm + '」（' + ct.length + ' 字，' + (a.enabled !== false ? '已启用' : '停用中') + '）';
+    }
+    if (a.action === 'update') {
+      const p = findPlugin(a.target);
+      if (!p) return '未找到插件：' + a.target;
+      const mode = a.mode || 'set_content';
+      if (mode === 'set_content') { p.content = a.content || ''; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已重写「' + p.name + '」正文（' + p.content.length + ' 字）'; }
+      if (mode === 'append') { p.content = (p.content || '') + '\n\n' + (a.content || ''); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已向「' + p.name + '」追加设定'; }
+      if (mode === 'rename') { const on = p.name; p.name = a.new_name || ''; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + on + '」已改名为「' + p.name + '」'; }
+      if (mode === 'set_enabled') { p.enabled = a.enabled !== false; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + p.name + '」已' + (p.enabled ? '启用' : '停用'); }
+      if (mode === 'replace') { const rr = tryReplaceContent(p.content || '', a.old_text || '', a.content || ''); if (rr === null) return '未找到片段，请改用 mode="set_content" 整体重写'; p.content = rr; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已替换「' + p.name + '」中的片段'; }
+      return '未知 mode：' + mode;
+    }
+    if (a.action === 'delete') {
+      const p = findPlugin(a.target);
+      if (!p) return '未找到插件：' + a.target;
+      plugins = plugins.filter(function (x) { return x.id !== p.id; });
+      savePlugins(); renderPlugins(); renderPlugBadge();
+      return '🗑 已删除插件「' + p.name + '」';
+    }
+    return '未知 action：' + a.action;
+  } catch (e) { return '执行出错：' + e.message; }
 }
 
 // 按名称/id 查找插件（支持精确匹配与包含匹配）
@@ -922,7 +968,19 @@ async function generate(text, isFreshSend) {
       const r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box);
       if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error; break; }
       if (r.content) finalText += r.content;
-      if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束
+      // ---- 文本协议兜底：模型不支持 function calling 时也能新建/修改/删除插件 ----
+      const acts = extractPluginActions(finalText);
+      if (acts.actions.length) {
+        const results = acts.actions.map(applyPluginAction);
+        finalText = acts.cleaned;
+        messages.push({ role: 'assistant', content: r.content || '' });
+        messages.push({ role: 'user', content: '【系统回执】插件指令执行结果：\n' + results.join('\n') + '\n请基于以上结果继续：若已全部完成，用一句话向用户确认；若还需要动作，继续输出指令块。' });
+        const bubble = el.querySelector('.bubble');
+        if (bubble) bubble.innerHTML = renderMD(finalText + '\n\n⚙️ 正在执行插件指令…');
+        toolIter++;
+        continue;
+      }
+      if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束  // 模型不再调工具 → 结束
       // 执行工具（搜索 GitHub / 安装 / 查看 / 修改 / 删除插件）
       setStatus('🔌 正在处理插件（查找 / 安装 / 修改）…');
       const tms = [];
