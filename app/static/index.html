@@ -2,9 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>AI Chat Platform - AI 聊天平台</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
 <style>
@@ -12,14 +10,10 @@
   --bg: #f5f6fa; --panel: #ffffff; --border: #e3e5ec; --text: #1f2430;
   --muted: #8a90a3; --primary: #6366f1; --primary-h: #818cf8;
   --user-bg: #6366f1; --ai-bg: #eef0f6; --danger: #dc2626;
-  /* --vvh 由 JS 跟 visualViewport 实时同步：软键盘弹出时自动等于"可视高度"，
-     这样 #app 收缩到键盘上方，输入框永远贴着键盘、不会被浏览器工具栏/边框挡住 */
-  --vvh: 100dvh;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { height: 100%; }
-body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); height: 100vh; height: var(--vvh); overflow: hidden; position: fixed; inset: 0; width: 100%; }
-#app { display: flex; height: 100vh; height: var(--vvh); }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); height: 100vh; height: 100dvh; overflow: hidden; }
+#app { display: flex; height: 100vh; height: 100dvh; }
 
 /* 侧栏 */
 #sidebar { width: 240px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -35,7 +29,7 @@ body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
 
 /* 主区 */
 #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-#topbar { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top, 0px)) 18px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+#topbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
 #topbar .title { font-weight: 600; flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn { background: #eef0f6; color: var(--text); border: none; border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px; transition: background .15s; }
 .btn:hover { background: #e0e3ee; }
@@ -44,8 +38,7 @@ body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
 .btn.danger { background: #fee2e2; color: var(--danger); }
 label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; color: var(--muted); }
 
-/* min-height:0 是 flex 必需的：否则长对话会把 #msgs 撑高、把输入框挤出可视区 */
-#msgs { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+#msgs { flex: 1; overflow-y: auto; padding: 24px; }
 .msg { max-width: 720px; margin: 0 auto 18px; line-height: 1.7; font-size: 14px; word-break: break-word; }
 .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .msg .bubble { padding: 11px 14px; border-radius: 12px; }
@@ -65,12 +58,9 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 .empty { text-align: center; color: var(--muted); margin-top: 18vh; }
 .empty h2 { font-size: 20px; margin-bottom: 8px; color: var(--text); }
 
-/* 底部只留安全区（Home 指示条）的高度，键盘补偿交给 --vvh 统一处理，
-   避免"dvh 收缩 + --kb padding"双重计算把输入框顶出可视区 */
-#inputbar { padding: 12px 24px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--panel); border-top: 1px solid var(--border); flex-shrink: 0; }
+#inputbar { padding: 14px 24px calc(18px + env(safe-area-inset-bottom, 0px) + var(--kb, 0px)); background: var(--panel); border-top: 1px solid var(--border); }
 #inputwrap { max-width: 720px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
-/* font-size 必须 >= 16px：iOS Safari 聚焦更小的输入框会强制放大整个页面，导致输入框错位被挡 */
-#input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 16px; font-family: inherit; resize: none; max-height: 140px; min-height: 44px; outline: none; transition: border-color .15s; -webkit-appearance: none; }
+#input { flex: 1; border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit; resize: none; max-height: 140px; min-height: 44px; outline: none; transition: border-color .15s; }
 #input:focus { border-color: var(--primary); }
 #status { max-width: 720px; margin: 0 auto 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
 
@@ -87,34 +77,9 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 #settings textarea { width:100%; background:#2c2d33; color:#e5e7eb; border:1px solid #3b3c44; border-radius:8px; padding:9px 11px; font-size:13px; outline:none; font-family:inherit; min-height:80px; resize:vertical; }
 
 @media (max-width: 700px) {
-  #sidebar { position: fixed; left: -260px; top: 0; bottom: 0; z-index: 40; transition: left .25s; width: 240px; }
+  #sidebar { position: fixed; left: -260px; top: 0; bottom: 0; z-index: 40; transition: left .25s; }
   #sidebar.open { left: 0; box-shadow: 0 0 30px rgba(0,0,0,.2); }
   #menuBtn { display: inline-block !important; }
-
-  #topbar { padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; gap: 8px; }
-  #topbar .title { font-size: 13px; }
-  .search-toggle { font-size: 12px; }
-  #plugBtn { padding: 6px 10px; }
-
-  #msgs { padding: 14px 12px; }
-  .msg { margin-bottom: 14px; }
-  .msg.ai .bubble pre { font-size: 12px; }
-
-  #inputbar { padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); }
-  #inputwrap { gap: 8px; }
-  #input { max-height: 100px; min-height: 42px; padding: 10px 12px; }
-  #sendBtn, #stopBtn { flex: 0 0 auto; min-width: 58px; padding: 10px 12px; }
-
-  #settings .card, #pluginModal .card { width: 480px; max-width: calc(100vw - 24px); max-height: 88vh; padding: 18px; }
-  .empty { margin-top: 12vh; }
-}
-/* 横屏/矮屏（键盘弹出后高度变小）时收紧留白，保证输入框始终可见 */
-@media (max-height: 480px) {
-  #msgs { padding: 10px 12px; }
-  .msg { margin-bottom: 10px; }
-  #inputbar { padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0px)); }
-  #input { max-height: 76px; min-height: 40px; }
-  #status { min-height: 0; }
 }
 #plugModal, #pluginModal { position: fixed; inset: 0; background: rgba(15,17,26,.5); display: none; align-items: center; justify-content: center; z-index: 50; }
 #pluginModal.open { display: flex; }
@@ -137,6 +102,19 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 #menuBtn { display: none; }
 #scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 39; }
 #scrim.show { display: block; }
+/* ===== 插件发现（AI 搜仓库并安装） ===== */
+.plug-discover { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border); }
+.plug-discover h4 { margin: 0 0 6px; font-size: 14px; }
+.plug-discover .hint { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 0 0 10px; }
+.plug-discover input { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; outline: none; box-sizing: border-box; font-family: inherit; }
+.plug-discover input:focus { border-color: var(--primary); }
+.disc-item { padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
+.disc-head { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.disc-head a { color: var(--primary); text-decoration: none; }
+.disc-stars { font-size: 11px; color: #e0a93b; }
+.disc-lang { font-size: 11px; color: var(--muted); background: #eee; border-radius: 6px; padding: 1px 6px; }
+.disc-desc { font-size: 12px; color: var(--muted); margin: 4px 0 8px; line-height: 1.5; }
+.btn.small { padding: 5px 10px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -189,6 +167,17 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
       </div>
       <div id="p-status" style="font-size:12px;margin-top:8px;display:none;"></div>
     </div>
+    <div class="plug-discover">
+      <h4>🤖 AI 发现并安装插件</h4>
+      <p class="hint">输入你想要的能力（如「翻译」「代码解释」「思维导图」），AI 会从 GitHub 搜索相关仓库，挑选最合适的并安装为插件（以仓库 README 作为插件正文）。</p>
+      <input id="disc-q" placeholder="想要什么能力的插件？">
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn primary" id="disc-ai">🤖 AI 帮我找并安装</button>
+        <button class="btn" id="disc-search">🔍 只搜候选</button>
+      </div>
+      <div id="disc-list" style="margin-top:10px;"></div>
+      <div id="disc-status" style="font-size:12px;margin-top:8px;display:none;"></div>
+    </div>
   </div>
 </div>
 
@@ -213,6 +202,8 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
     </select>
     <label>网络代理（访问 Google 等，可选）</label>
     <input id="s-proxy" placeholder="例如 https://corsproxy.io/?{url}">
+    <label>GitHub Token（插件发现用，可选，提高搜索限额）</label>
+    <input id="s-gtoken" type="password" placeholder="ghp_...（留空则用匿名，限额较低）">
     <div class="hint">
       兼容任何 OpenAI 协议服务：OpenAI / DeepSeek / 通义千问 / Ollama / OpenRouter / 中转站。
       代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
@@ -228,22 +219,7 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 </div>
 
 <script>
-/* ================= 访问门禁已移除（应用锁已解，进页面即可直接使用） =================
-   兼容清理：老版本页面可能往 localStorage 写过门禁/解锁状态，升级后这些残留
-   仍可能把页面卡在锁屏。这里一次性清除，保证打开即可用。
-   ================================================================================ */
-(function clearLegacyGate() {
-  try {
-    const doomed = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      // 只清理门禁类残留，业务数据（aicp_* 会话/设置/插件）一律保留
-      if (k && !k.startsWith('aicp_') && /(gate|lock|unlock|pass|pincode|authset)/i.test(k)) doomed.push(k);
-    }
-    doomed.forEach(k => localStorage.removeItem(k));
-  } catch (e) {}
-  try { sessionStorage.removeItem('aicp_gate'); } catch (e) {}
-})();
+/* ================= 访问门禁已移除（应用锁已解，进页面即可直接使用） ================= */
 
 /* ================= 插件系统 ================= */
 let plugins = JSON.parse(localStorage.getItem('aicp_plugins') || '[]');
@@ -275,6 +251,98 @@ function renderPlugBadge() {
   $('#plugCount').textContent = n ? '🔌 ' + n : '🔌 插件';
 }
 function openPlugins() { $('#pluginModal').classList.add('open'); renderPlugins(); }
+
+/* ================= 插件发现：AI 搜 GitHub 仓库并安装 ================= */
+function discSetStatus(msg, color) {
+  const st = $('#disc-status'); st.style.display = 'block';
+  st.style.color = color || 'var(--muted)'; st.textContent = msg;
+}
+function discRenderCandidates(list) {
+  const box = $('#disc-list'); box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<div class="plug-empty">没有找到相关仓库，换个说法试试</div>'; return; }
+  list.forEach(repo => {
+    const d = document.createElement('div'); d.className = 'disc-item';
+    d.innerHTML =
+      '<div class="disc-head"><a href="' + esc(repo.html_url) + '" target="_blank" rel="noopener">' + esc(repo.full_name) + '</a>' +
+      (repo.stars ? ' <span class="disc-stars">★ ' + repo.stars + '</span>' : '') +
+      (repo.language ? ' <span class="disc-lang">' + esc(repo.language) + '</span>' : '') + '</div>' +
+      '<div class="disc-desc">' + esc(repo.description || '（无描述）') + '</div>' +
+      '<button class="btn small" data-fn="' + esc(repo.full_name) + '">安装为插件</button>';
+    d.querySelector('button').onclick = () => discInstall(repo.full_name, repo.name);
+    box.appendChild(d);
+  });
+}
+async function discInstall(full_name, name) {
+  discSetStatus('正在获取 ' + full_name + ' 的 README…', 'var(--muted)');
+  try {
+    const r = await fetch('/api/plugin-readme', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ full_name, token: settings.githubToken || '' }),
+    });
+    const j = await r.json();
+    if (!j.ok) { discSetStatus('❌ ' + j.error, '#dc2626'); return; }
+    plugins.push({ id: uid(), name: name || full_name, content: j.content, enabled: true, source: full_name });
+    savePlugins(); renderPlugins(); renderPlugBadge();
+    discSetStatus('✅ 已安装插件「' + (name || full_name) + '」（README ' + j.length + ' 字，已启用）', '#16a34a');
+  } catch (e) { discSetStatus('❌ ' + e.message, '#dc2626'); }
+}
+async function discSearch() {
+  const q = $('#disc-q').value.trim();
+  if (!q) { discSetStatus('❌ 先输入你想要的能力', '#dc2626'); return; }
+  discSetStatus('🔍 正在 GitHub 搜索相关仓库…', 'var(--muted)');
+  try {
+    const r = await fetch('/api/discover-plugins', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q + ' plugin', limit: 8, token: settings.githubToken || '' }),
+    });
+    const j = await r.json();
+    if (!j.ok) { discSetStatus('❌ ' + j.error, '#dc2626'); return; }
+    discRenderCandidates(j.results);
+    discSetStatus('✅ 找到 ' + j.count + ' 个仓库，点「安装为插件」即可', '#16a34a');
+  } catch (e) { discSetStatus('❌ ' + e.message, '#dc2626'); }
+}
+async function discAI() {
+  const q = $('#disc-q').value.trim();
+  if (!q) { discSetStatus('❌ 先输入你想要的能力', '#dc2626'); return; }
+  discSetStatus('🤖 AI 正在搜索并挑选最合适的仓库…', 'var(--muted)');
+  try {
+    const r = await fetch('/api/discover-plugins', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q + ' plugin', limit: 10, token: settings.githubToken || '' }),
+    });
+    const j = await r.json();
+    if (!j.ok) { discSetStatus('❌ ' + j.error, '#dc2626'); return; }
+    if (!j.results.length) { discSetStatus('😕 没找到相关仓库，换个说法试试', '#dc2626'); return; }
+    discRenderCandidates(j.results);
+    let chosen = j.results[0], reason = '（按星标最高）';
+    if (settings.apiKey) {
+      const meta = j.results.map((x, i) => (i + 1) + '. ' + x.full_name + ' — ' + (x.description || '无描述') + ' (★' + x.stars + ', ' + (x.language || '?') + ')').join('\n');
+      const sysMsg = '你是插件选型助手。以下是从 GitHub 搜到的候选仓库，用户想要的能力是：「' + q + '」。请只回复一个 JSON 对象：{"pick": 序号(1起), "reason": "一句话理由"}，不要输出其他内容。';
+      const r2 = await fetch('/api/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: sysMsg },
+            { role: 'user', content: meta },
+          ],
+        }),
+      });
+      const txt = await r2.text();
+      let aiText = '';
+      txt.split('\n\n').forEach(part => {
+        const line = part.trim();
+        if (line.startsWith('data:')) {
+          try { const d = JSON.parse(line.slice(5).trim()); const dl = d.choices && d.choices[0] && d.choices[0].delta; if (dl && dl.content) aiText += dl.content; } catch {}
+        }
+      });
+      try { const m = aiText.match(/\{[\s\S]*\}/); if (m) { const o = JSON.parse(m[0]); const idx = (o.pick || 1) - 1; if (j.results[idx]) { chosen = j.results[idx]; reason = o.reason || reason; } } } catch {}
+    }
+    discSetStatus('🤖 AI 选择：' + chosen.full_name + ' — ' + reason + '。正在安装…', '#16a34a');
+    await discInstall(chosen.full_name, chosen.name);
+  } catch (e) { discSetStatus('❌ ' + e.message, '#dc2626'); }
+}
 
 /* ================= 存储层 ================= */
 const Store = {
@@ -439,32 +507,6 @@ function renderMsgs() {
 }
 function setStatus(t) { $('#status').textContent = t || ''; }
 
-/* ================= 搜索（带前端缓存，避免重复查询反复走网络） ================= */
-const _searchCache = new Map();
-const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 5 分钟
-async function runSearch(query) {
-  const q = (query || '').trim();
-  if (!q) return [];
-  const key = q.toLowerCase() + '|' + (settings.searchEngine || 'duckduckgo');
-  const hit = _searchCache.get(key);
-  if (hit && Date.now() - hit.ts < SEARCH_CACHE_TTL) return hit.results;
-  try {
-    const r = await fetch('/api/search', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q, engine: settings.searchEngine, proxy: settings.proxy }),
-      signal: controller ? controller.signal : undefined,
-    });
-    const j = await r.json();
-    const results = j.results || [];
-    _searchCache.set(key, { ts: Date.now(), results });
-    if (_searchCache.size > 50) _searchCache.delete(_searchCache.keys().next().value);
-    return results;
-  } catch (e) {
-    if (e && e.name === 'AbortError') return [];
-    return [];
-  }
-}
-
 /* ================= 发送（SSE 流式） ================= */
 async function send() {
   if (busy) return;
@@ -498,11 +540,20 @@ async function generate(text, isFreshSend) {
   if (sys) messages.push({ role: 'system', content: sys });
   if (searchOn) {
     setStatus('🌐 正在搜索网页…');
-    const t0 = performance.now();
-    sources = await runSearch(text);
-    const cost = ((performance.now() - t0) / 1000).toFixed(1);
-    setStatus(sources.length ? `🌐 找到 ${sources.length} 条结果（${cost}s）` : '⚠️ 搜索无结果，直接回答');
-    // 注意：搜索结果通过下面的 searchResults 传给后端复用，不再让后端重复搜一遍
+    try {
+      const r = await fetch('/api/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: text, engine: settings.searchEngine, proxy: settings.proxy }),
+        signal: controller.signal,
+      });
+      const j = await r.json();
+      sources = j.results || [];
+    } catch {}
+    if (sources.length) {
+      messages.push({ role: 'system', content: '以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n' +
+        sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') });
+    }
+    setStatus('');
   }
   // 叠加启用的插件（个性化设定，多个同时生效）
   const ap = activePlugins();
@@ -526,8 +577,6 @@ async function generate(text, isFreshSend) {
       body: JSON.stringify({
         apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
         temperature: settings.temperature, messages, search: searchOn,
-        // 前端已搜到的结果直接交给后端注入；后端识别到该字段就不再重复搜索
-        searchResults: sources,
         searchEngine: settings.searchEngine, proxy: settings.proxy,
       }),
       signal: controller.signal,
@@ -588,6 +637,7 @@ function openSettings() {
   $('#s-temp').value = settings.temperature;
   $('#s-engine').value = settings.searchEngine || 'duckduckgo';
   $('#s-proxy').value = settings.proxy || '';
+  $('#s-gtoken').value = settings.githubToken || '';
   $('#s-sys').value = settings.sysPrompt || '';
   $('#settings').classList.add('open');
 }
@@ -619,6 +669,7 @@ function saveSettings() {
     temperature: parseFloat($('#s-temp').value) || 0.7,
     searchEngine: $('#s-engine').value,
     proxy: $('#s-proxy').value.trim(),
+    githubToken: $('#s-gtoken').value.trim(),
     sysPrompt: $('#s-sys').value,
   };
   Store.saveSettings(settings);
@@ -634,6 +685,8 @@ $('#cfgBtn').onclick = () => openSettings();
 $('#saveBtn').onclick = saveSettings;
 $('#testBtn').onclick = testConn;
 $('#plugBtn').onclick = openPlugins;
+$('#disc-ai').onclick = discAI;
+$('#disc-search').onclick = discSearch;
 $('#p-close').onclick = () => $('#pluginModal').classList.remove('open');
 $('#pluginModal').addEventListener('click', e => { if (e.target.id === 'pluginModal') e.target.classList.remove('open'); });
 $('#p-fetch').onclick = async () => {
@@ -677,34 +730,16 @@ input.addEventListener('input', () => {
   input.style.height = Math.min(input.scrollHeight, 140) + 'px';
 });
 
-/* 移动端：用 visualViewport 的真实可视高度驱动布局。
-   键盘/浏览器工具栏出现时 #app 自动收缩到可视高度，输入框始终贴在键盘上方，
-   不再依赖 --kb padding 做二次补偿（原先两者叠加会把输入框顶出屏幕）。 */
-(function viewportSync() {
+/* 移动端：软键盘弹出时把输入框顶到键盘上方，避免被遮挡 */
+(function mobileKeyboard() {
+  if (!window.visualViewport) return;
   const vv = window.visualViewport;
-  const root = document.documentElement;
-  let raf = 0;
   const apply = () => {
-    if (raf) return;
-    raf = requestAnimationFrame(() => {
-      raf = 0;
-      const h = vv ? vv.height : window.innerHeight;
-      root.style.setProperty('--vvh', h + 'px');
-      // 键盘弹出时 iOS 可能把整个页面上顶，这里校正回原位，避免整页偏移
-      if (vv && vv.offsetTop > 0) window.scrollTo(0, 0);
-      // 输入框聚焦时保持消息区滚到底部
-      if (document.activeElement && document.activeElement.id === 'input') {
-        const box = $('#msgs');
-        box.scrollTop = box.scrollHeight;
-      }
-    });
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--kb', kb + 'px');
   };
-  if (vv) {
-    vv.addEventListener('resize', apply);
-    vv.addEventListener('scroll', apply);
-  }
-  window.addEventListener('resize', apply);
-  window.addEventListener('orientationchange', () => setTimeout(apply, 250));
+  vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', apply);
   apply();
 })();
 
