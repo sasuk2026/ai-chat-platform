@@ -7,6 +7,7 @@
 
 托管方式见 README.md（Railway 一键部署 / 本地 uvicorn）。
 """
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,8 @@ async def chat(request: Request):
     temperature = float(body.get("temperature") or 0.7)
     messages = body.get("messages") or []
     search_enabled = bool(body.get("search"))
+    tools = body.get("tools")
+    tool_choice = body.get("tool_choice")
 
     # 联网搜索：取最后一条用户消息作为查询
     searches = []
@@ -73,6 +76,9 @@ async def chat(request: Request):
         "stream": True,
         "messages": messages,
     }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice or "auto"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -199,6 +205,7 @@ async def discover_plugins(request: Request):
                 "html_url": it.get("html_url"),
                 "stars": it.get("stargazers_count", 0),
                 "language": it.get("language") or "",
+                "topics": it.get("topics") or [],
             } for it in items]
             return JSONResponse({"ok": True, "count": len(results), "results": results})
     except Exception as e:
@@ -236,6 +243,72 @@ async def plugin_readme(request: Request):
             except Exception:
                 continue
     return JSONResponse({"ok": False, "error": "无法获取该仓库 README（GitHub 限流，可在「设置」填写 GitHub Token 后重试）"})
+
+
+# ---------------- 插件安装：深入抓取仓库内容（不止 README） ----------------
+@app.post("/api/agent-browse")
+async def agent_browse(request: Request):
+    """深入某 GitHub 仓库，抓取适合作为插件正文的内容（README + 其他说明/提示词文档）。"""
+    body = await request.json()
+    full_name = (body.get("full_name") or "").strip()
+    token = (body.get("token") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    max_len = int(body.get("max_len") or 6000)
+    if not full_name or "/" not in full_name:
+        return JSONResponse({"ok": False, "error": "需提供 owner/repo"})
+
+    # 候选文档（按重要性排序）
+    doc_candidates = [
+        "README.md", "README_zh.md", "README_zh-CN.md", "USAGE.md", "GUIDE.md",
+        "PROMPT.md", "PROMPTS.md", "SYSTEM.md", "AGENTS.md", "CONTRIBUTING.md",
+        "docs/README.md", "docs/guide.md",
+    ]
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        doc_paths = list(doc_candidates)
+        # 带 token 时先用 contents API 列出根目录，挑出真正的 .md（更精准）
+        if token:
+            try:
+                rr = await client.get(
+                    f"https://api.github.com/repos/{full_name}/contents/",
+                    headers={"Accept": "application/vnd.github+json", "User-Agent": "ai-chat-platform", "Authorization": "Bearer " + token},
+                )
+                if rr.status_code == 200:
+                    items = rr.json() or []
+                    mds = [it["path"] for it in items if isinstance(it, dict) and str(it.get("name", "")).lower().endswith(".md")]
+                    prioritized = [p for p in doc_candidates if p in mds]
+                    others = [m for m in mds if m not in doc_candidates][:4]
+                    doc_paths = (prioritized + others)[:6]
+            except Exception:
+                pass
+
+        async def grab(path):
+            # raw 匿名也比 API 宽松，直接抓，避开 403 限流
+            for br in ("main", "master"):
+                try:
+                    g = await client.get(f"https://raw.githubusercontent.com/{full_name}/{br}/{path}")
+                    if g.status_code == 200 and g.text.strip():
+                        return (path, g.text.strip())
+                except Exception:
+                    continue
+            return None
+
+        results = await asyncio.gather(*[grab(p) for p in doc_paths])
+        results = [r for r in results if r]
+
+    if not results:
+        return JSONResponse({"ok": False, "error": "无法获取该仓库内容（GitHub 限流，可在「设置」填写 GitHub Token 后重试）"})
+
+    merged, total = [], 0
+    for path, text in results:
+        chunk = f"# 来自 {path}\n\n{text}\n\n"
+        if total + len(chunk) > max_len:
+            chunk = chunk[: max(0, max_len - total)]
+        merged.append(chunk)
+        total += len(chunk)
+        if total >= max_len:
+            break
+    content = "".join(merged).strip()
+    return JSONResponse({"ok": True, "content": content, "length": len(content), "files": [p for p, _ in results]})
 
 
 # ---------------- Agno AgentOS（可选，环境变量配置） ----------------
