@@ -839,8 +839,12 @@ async function generate(text, isFreshSend) {
   if (ap.length) {
     messages.push({ role: 'system', content: '【用户个性化设定（请严格遵守）】\n' + ap.map((p, i) => '◆ 插件「' + p.name + '」：\n' + p.content).join('\n\n') });
   }
-  // 对话内安装插件：注入工具使用指引（仅当用户已配置 API 时启用）
-  if (settings.apiKey) {
+  // 对话内管理插件：注入工具使用指引
+  // 【严格闸门】只有用户这次明确提到「插件/plugin/install」时才给 AI 工具，
+  // 否则普通聊天（写诗、问天气、翻译）AI 也会跑去查 GitHub。
+  const lastUserMsg = (conv.messages || []).filter(m => m.role === 'user').pop();
+  const plugIntent = /(插件|plugin|install)/i.test(lastUserMsg ? lastUserMsg.content : '');
+  if (settings.apiKey && plugIntent) {
     messages.push({ role: 'system', content: PLUGIN_TOOL_SYS });
   }
   conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
@@ -855,7 +859,7 @@ async function generate(text, isFreshSend) {
   try {
     let toolIter = 0;
     while (toolIter < 4) {
-      const r = await runChatStream(messages, settings.apiKey ? PLUGIN_TOOLS : null, el, box);
+      const r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box);
       if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error; break; }
       if (r.content) finalText += r.content;
       if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束
