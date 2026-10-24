@@ -1,9 +1,17 @@
-"""网页搜索：DuckDuckGo / Bing / Google，支持网络代理模板。"""
+"""网页搜索：DuckDuckGo（ddgs 库，快且稳）为主，Bing/Google 爬虫兜底；支持网络代理。"""
+import asyncio
 import re
 from html import unescape
 from urllib.parse import unquote
 
 import httpx
+
+# ddgs 已在 requirements.txt 声明；优先用它（直连 DDG 接口，速度远快于爬 html 页面）
+try:
+    from ddgs import DDGS
+    DDGS_AVAILABLE = True
+except Exception:
+    DDGS_AVAILABLE = False
 
 UA = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -34,9 +42,28 @@ def _enc(target: str) -> str:
 
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> str:
-    r = await client.get(url, headers=UA, timeout=20, follow_redirects=True)
+    r = await client.get(url, headers=UA, timeout=10, follow_redirects=True)
     r.raise_for_status()
     return r.text
+
+
+async def _ddgs_search(query: str, max_results: int = 6) -> list:
+    """用 ddgs 库直连 DuckDuckGo（快且稳定），放到线程里避免阻塞事件循环。"""
+    def _run():
+        with DDGS() as ddgs:
+            return ddgs.text(query, max_results=max_results)
+    try:
+        raw = await asyncio.to_thread(_run)
+    except Exception:
+        return []
+    out = []
+    for r in (raw or []):
+        title = (r.get("title") or "").strip()
+        url = r.get("href") or r.get("url") or ""
+        snippet = r.get("body") or ""
+        if title and url:
+            out.append({"title": title, "url": url, "snippet": snippet})
+    return out
 
 
 async def search_ddg(client, query):
@@ -61,7 +88,7 @@ async def search_ddg(client, query):
 
 
 async def search_ddg_api(client, query):
-    r = await client.get("https://api.duckduckgo.com/", params={"format": "json", "no_html": 1, "q": query}, timeout=20)
+    r = await client.get("https://api.duckduckgo.com/", params={"format": "json", "no_html": 1, "q": query}, timeout=10)
     r.raise_for_status()
     j = r.json()
     results = []
@@ -118,31 +145,55 @@ RUNNERS = {
 }
 
 
-async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "") -> list:
-    """按引擎搜索，失败自动降级；配置代理时先经代理重试。"""
-    runners = RUNNERS.get(engine, RUNNERS["duckduckgo"])
+async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "", max_results: int = 6, timeout: float = 8) -> list:
+    """多源并发搜索，取首个非空结果；单次与整体均设硬超时，避免卡死。
 
-    async with httpx.AsyncClient() as client:
-        # 1. 带代理尝试
-        if proxy:
-            for fn in runners:
-                try:
-                    target = apply_proxy(proxy, _base_url(fn, query))
-                    html_or_json = await _fetch(client, target)
-                    res = await _parse(fn, client, query, html_or_json)
-                    if res:
-                        return res
-                except Exception:
-                    continue
-        # 2. 直连尝试
-        for fn in runners:
-            try:
-                res = await fn(client, query)
-                if res:
-                    return res
-            except Exception:
-                continue
+    - 首选 ddgs（直连 DuckDuckGo 接口，秒回、稳定），速度远快于爬 html 页面。
+    - 用户指定 bing/google 时，将其爬虫作为 ddgs 失败后的兜底（与原逻辑一致）。
+    - 配置代理时（如访问 Google）走原代理模板兜底。
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    async def run(coro):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception:
+            return None
+
+    async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=timeout) as client:
+        tasks = []
+        # 首选：ddgs（最快最稳）
+        if DDGS_AVAILABLE:
+            tasks.append(run(_ddgs_search(query, max_results)))
+        # 用户指定引擎的爬虫：ddgs 失败时兜底
+        if engine == "bing":
+            tasks.append(run(search_bing(client, query)))
+        elif engine == "google":
+            tasks.append(run(search_google(client, query)))
+            tasks.append(run(search_bing(client, query)))
+        else:  # duckduckgo
+            tasks.append(run(search_ddg_api(client, query)))
+            tasks.append(run(search_ddg(client, query)))
+        # 配置代理且 ddgs 不可用时，补一个代理兜底
+        if proxy and not DDGS_AVAILABLE:
+            for fn in (search_google, search_bing, search_ddg_api):
+                tasks.append(run(_proxy_search(client, fn, query, proxy)))
+
+        # 并发执行，谁先返回有效结果就用谁
+        for fut in asyncio.as_completed(tasks):
+            res = await fut
+            if res:
+                return res[:max_results]
     return []
+
+
+async def _proxy_search(client, fn, query, proxy):
+    """代理模式下经代理模板重试（保留原代理能力）。"""
+    target = apply_proxy(proxy, _base_url(fn, query))
+    raw = await _fetch(client, target)
+    return await _parse(fn, client, query, raw)
 
 
 def _base_url(fn, query):
