@@ -146,46 +146,57 @@ RUNNERS = {
 
 
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "", max_results: int = 6, timeout: float = 8) -> list:
-    """多源并发搜索，取首个非空结果；单次与整体均设硬超时，避免卡死。
+    """按用户所选引擎搜索；多源并发，既尊重引擎选择又保证不卡死。
 
-    - 首选 ddgs（直连 DuckDuckGo 接口，秒回、稳定），速度远快于爬 html 页面。
-    - 用户指定 bing/google 时，将其爬虫作为 ddgs 失败后的兜底（与原逻辑一致）。
-    - 配置代理时（如访问 Google）走原代理模板兜底。
+    - 用户选 bing/google：以其爬虫为首选（尊重选择），ddgs 作快速兜底；
+      首选引擎给短超时（默认 5s），超时/失败立即回退 ddgs，避免变慢。
+    - 用户选 duckduckgo（默认）：直接用 ddgs（最快最稳）。
+    - 配置代理时（如访问 Google）额外走原代理模板兜底。
     """
     query = (query or "").strip()
     if not query:
         return []
 
-    async def run(coro):
+    async def run(coro, to=timeout):
         try:
-            return await asyncio.wait_for(coro, timeout=timeout)
+            return await asyncio.wait_for(coro, timeout=to)
         except Exception:
             return None
 
-    async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=timeout) as client:
-        tasks = []
-        # 首选：ddgs（最快最稳）
-        if DDGS_AVAILABLE:
-            tasks.append(run(_ddgs_search(query, max_results)))
-        # 用户指定引擎的爬虫：ddgs 失败时兜底
-        if engine == "bing":
-            tasks.append(run(search_bing(client, query)))
-        elif engine == "google":
-            tasks.append(run(search_google(client, query)))
-            tasks.append(run(search_bing(client, query)))
-        else:  # duckduckgo
-            tasks.append(run(search_ddg_api(client, query)))
-            tasks.append(run(search_ddg(client, query)))
-        # 配置代理且 ddgs 不可用时，补一个代理兜底
-        if proxy and not DDGS_AVAILABLE:
-            for fn in (search_google, search_bing, search_ddg_api):
-                tasks.append(run(_proxy_search(client, fn, query, proxy)))
+    # 用户所选引擎对应的爬虫（duckduckgo 由 ddgs 直连，无需爬虫）
+    preferred = {"bing": search_bing, "google": search_google}.get(engine)
 
-        # 并发执行，谁先返回有效结果就用谁
-        for fut in asyncio.as_completed(tasks):
-            res = await fut
-            if res:
-                return res[:max_results]
+    async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=timeout) as client:
+        # 并发启动：ddgs 兜底 + 用户首选引擎（各自独立计时）
+        t_ddgs = asyncio.create_task(run(_ddgs_search(query, max_results))) if DDGS_AVAILABLE else None
+        t_pref = asyncio.create_task(run(preferred(client, query), to=min(timeout, 5))) if preferred else None
+        try:
+            # 1) 先等用户所选引擎（短超时，尊重选择）
+            if t_pref is not None:
+                res = await t_pref
+                if res:
+                    return res[:max_results]
+            # 2) ddgs 兜底（通常已就绪，秒回）
+            if t_ddgs is not None:
+                res = await t_ddgs
+                if res:
+                    return res[:max_results]
+            # 3) 仍未果：原 DDG 接口/爬虫兜底
+            for fn in (search_ddg_api, search_ddg):
+                res = await run(fn(client, query))
+                if res:
+                    return res[:max_results]
+            # 4) 配置了代理则再走原代理模板兜底
+            if proxy:
+                for fn in (search_google, search_bing, search_ddg_api):
+                    res = await run(_proxy_search(client, fn, query, proxy))
+                    if res:
+                        return res[:max_results]
+        finally:
+            # 提前返回时取消仍在跑的并发任务，避免悬挂告警
+            for t in (t_ddgs, t_pref):
+                if t is not None and not t.done():
+                    t.cancel()
     return []
 
 
