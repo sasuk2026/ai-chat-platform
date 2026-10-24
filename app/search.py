@@ -10,6 +10,7 @@
 4. 连接池复用，避免每次搜索重建 TCP/TLS。
 """
 import asyncio
+import base64
 import re
 import time
 from collections import OrderedDict
@@ -81,6 +82,32 @@ def _strip_tags(s: str) -> str:
 
 def _enc(target: str) -> str:
     return quote(target, safe="")
+
+
+def _decode_bing_url(href: str) -> str:
+    """Bing 的结果是 bing.com/ck/a?...&u=a1<base64> 跳转链，需解码出真实地址，
+    否则用户点开的是一个 Bing 中转页而不是目标网站。"""
+    try:
+        if "bing.com/ck/a" in href or "u=a1" in href:
+            m = re.search(r"[?&]u=a1([^&]+)", href)
+            if m:
+                b64 = m.group(1)
+                real = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-8", "ignore")
+                if real.startswith(("http://", "https://")):
+                    return real
+    except Exception:
+        pass
+    return href
+
+
+def _clean_bing_result(title: str, href: str, snippet: str) -> dict:
+    """统一处理 Bing 单条结果：解码跳转链，丢弃无法还原真实地址的条目。"""
+    if not title:
+        return None
+    real = _decode_bing_url(href)
+    if real.startswith(("https://www.bing.com/ck/a", "http://www.bing.com/ck/a")):
+        return None
+    return {"title": title, "url": real, "snippet": snippet}
 
 
 def apply_proxy(proxy: str, target: str) -> str:
@@ -181,8 +208,9 @@ async def search_bing(client, query, timeout: float = 5.0):
         href, title, rest = m.group(1), _clean(m.group(2)), m.group(3)
         sm = re.search(r"<p[^>]*>(.*?)</p>", rest, re.S)
         snippet = _clean(sm.group(1)) if sm else ""
-        if title:
-            results.append({"title": title, "url": href, "snippet": snippet})
+        item = _clean_bing_result(title, href, snippet)
+        if item:
+            results.append(item)
     if not results:
         raise ValueError("bing empty")
     return results
@@ -278,14 +306,18 @@ async def _search_once(client, query: str, engine: str, proxy: str, max_results:
         return results
 
     # ---- 第二波：按用户选择的引擎上爬虫兜底 ----
+    # 注意：DuckDuckGo 的接口/网页近几年经常返回空或被引流，所以无论用户选了哪个引擎，
+    #       Bing 都要进兜底列表，否则「默认引擎」会直接搜不出任何东西。
     wave2 = []
     if engine == "bing":
         wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+        wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
     elif engine == "google":
         wave2.append(search_google(client, query, timeout=min(4.0, _left())))
         wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
-    else:                                   # duckduckgo
+    else:                                   # duckduckgo → 必须补 Bing 兜底
         wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
+        wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
 
     return await _race(wave2, timeout=_left())
 
@@ -395,8 +427,10 @@ def _parse_bing_html(html):
         if len(results) >= 6:
             break
         sm = re.search(r"<p[^>]*>(.*?)</p>", m.group(3), re.S)
-        results.append({"title": _clean(m.group(2)), "url": m.group(1), "snippet": _clean(sm.group(1)) if sm else ""})
-    return [r for r in results if r["title"]]
+        item = _clean_bing_result(_clean(m.group(2)), m.group(1), _clean(sm.group(1)) if sm else "")
+        if item:
+            results.append(item)
+    return results
 
 
 def _parse_google_html(html):
