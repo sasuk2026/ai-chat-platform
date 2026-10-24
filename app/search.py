@@ -1,8 +1,20 @@
-"""网页搜索：DuckDuckGo（ddgs 库，快且稳）为主，Bing/Google 爬虫兜底；支持网络代理。"""
+"""网页搜索：DuckDuckGo（ddgs 库，快且稳）为主，Bing/Google 爬虫兜底；支持网络代理。
+
+性能设计（关键）：
+1. 结果缓存：相同 query+engine 在 TTL 内直接命中，避免重复网络往返。
+2. 分级超时（staged race）：
+   - 第一波只跑最快的两个源（ddgs / DDG Instant Answer），短超时（默认 2.5s）；
+   - 第一波无结果才启动第二波爬虫兜底（Bing / Google HTML）；
+   - 整体硬超时（默认 6s）到了立刻返回，绝不拖到请求超时。
+3. 重复查询去重：并发的同一 query 共享一次真实请求（inflight 合并）。
+4. 连接池复用，避免每次搜索重建 TCP/TLS。
+"""
 import asyncio
 import re
+import time
+from collections import OrderedDict
 from html import unescape
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 
 import httpx
 
@@ -18,6 +30,46 @@ UA = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
+# ---------------- 可调参数 ----------------
+CACHE_TTL = 300          # 缓存有效期（秒）
+CACHE_MAX = 256          # 缓存最多保留多少条
+FAST_TIMEOUT = 2.5       # 第一波（快源）超时
+TOTAL_TIMEOUT = 6.0      # 整体硬超时
+
+# 并发友好的连接池：复用 TCP/TLS，避免每次搜索重新握手
+_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10,
+                       keepalive_expiry=15.0)
+
+# ---------------- 缓存（TTL + LRU） ----------------
+_cache = OrderedDict()
+
+
+def _cache_key(query: str, engine: str, max_results: int) -> tuple:
+    return (query.strip().lower(), engine, max_results)
+
+
+def _cache_get(key):
+    item = _cache.get(key)
+    if not item:
+        return None
+    ts, val = item
+    if time.monotonic() - ts > CACHE_TTL:
+        _cache.pop(key, None)
+        return None
+    _cache.move_to_end(key)
+    return val
+
+
+def _cache_set(key, val):
+    _cache[key] = (time.monotonic(), val)
+    _cache.move_to_end(key)
+    while len(_cache) > CACHE_MAX:
+        _cache.popitem(last=False)
+
+
+# ---------------- 并发去重（同一 query 只打一次网络） ----------------
+_inflight = {}
+
 
 def _clean(s: str) -> str:
     return unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
@@ -27,35 +79,53 @@ def _strip_tags(s: str) -> str:
     return re.sub(r"<[^>]+>", "", s or "")
 
 
+def _enc(target: str) -> str:
+    return quote(target, safe="")
+
+
 def apply_proxy(proxy: str, target: str) -> str:
     """proxy 模板：含 {url} 则替换为编码后的目标地址；否则前缀拼接。"""
     if not proxy:
         return target
     if "{url}" in proxy:
-        return proxy.replace("{url}", unquote(unquote("{url}")) if False else target and _enc(target))
+        return proxy.replace("{url}", _enc(target))
     return proxy + _enc(target)
 
 
-def _enc(target: str) -> str:
-    from urllib.parse import quote
-    return quote(target, safe="")
-
-
-async def _fetch(client: httpx.AsyncClient, url: str) -> str:
-    r = await client.get(url, headers=UA, timeout=10, follow_redirects=True)
+async def _fetch(client: httpx.AsyncClient, url: str, timeout: float = 5.0) -> str:
+    r = await client.get(url, headers=UA, timeout=timeout, follow_redirects=True)
     r.raise_for_status()
     return r.text
 
 
+# ---------------- ddgs（首选，最快最稳） ----------------
+_ddgs_lock = asyncio.Lock()
+_ddgs_obj = None
+
+
+def _ddgs_new():
+    return DDGS()
+
+
 async def _ddgs_search(query: str, max_results: int = 6) -> list:
-    """用 ddgs 库直连 DuckDuckGo（快且稳定），放到线程里避免阻塞事件循环。"""
-    def _run():
-        with DDGS() as ddgs:
-            return ddgs.text(query, max_results=max_results)
+    """用 ddgs 库直连 DuckDuckGo；放线程里避免阻塞事件循环，并复用实例减少握手开销。"""
+    global _ddgs_obj
+
+    def _run(ddgs):
+        return ddgs.text(query, max_results=max_results)
+
     try:
-        raw = await asyncio.to_thread(_run)
+        async with _ddgs_lock:  # ddgs 非线程安全，串行访问
+            if _ddgs_obj is None:
+                _ddgs_obj = _ddgs_new()
+            try:
+                raw = await asyncio.to_thread(_run, _ddgs_obj)
+            except Exception:
+                _ddgs_obj = _ddgs_new()          # 实例坏了就重建再试一次
+                raw = await asyncio.to_thread(_run, _ddgs_obj)
     except Exception:
         return []
+
     out = []
     for r in (raw or []):
         title = (r.get("title") or "").strip()
@@ -66,8 +136,8 @@ async def _ddgs_search(query: str, max_results: int = 6) -> list:
     return out
 
 
-async def search_ddg(client, query):
-    html = await _fetch(client, "https://html.duckduckgo.com/html/?q=" + _enc(query))
+async def search_ddg(client, query, timeout: float = 5.0):
+    html = await _fetch(client, "https://html.duckduckgo.com/html/?q=" + _enc(query), timeout)
     results = []
     for m in re.finditer(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]*class="[^"]*result__a|$)', html, re.S):
         if len(results) >= 6:
@@ -87,8 +157,8 @@ async def search_ddg(client, query):
     return results
 
 
-async def search_ddg_api(client, query):
-    r = await client.get("https://api.duckduckgo.com/", params={"format": "json", "no_html": 1, "q": query}, timeout=10)
+async def search_ddg_api(client, query, timeout: float = 5.0):
+    r = await client.get("https://api.duckduckgo.com/", params={"format": "json", "no_html": 1, "q": query}, timeout=timeout)
     r.raise_for_status()
     j = r.json()
     results = []
@@ -102,8 +172,8 @@ async def search_ddg_api(client, query):
     return results
 
 
-async def search_bing(client, query):
-    html = await _fetch(client, "https://www.bing.com/search?q=" + _enc(query) + "&count=10")
+async def search_bing(client, query, timeout: float = 5.0):
+    html = await _fetch(client, "https://www.bing.com/search?q=" + _enc(query) + "&count=10", timeout)
     results = []
     for m in re.finditer(r'<li class="b_algo".*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>(.*?)(?=<li class="b_algo"|</ol>)', html, re.S):
         if len(results) >= 6:
@@ -118,8 +188,8 @@ async def search_bing(client, query):
     return results
 
 
-async def search_google(client, query):
-    html = await _fetch(client, "https://www.google.com/search?q=" + _enc(query) + "&num=10&hl=zh-CN")
+async def search_google(client, query, timeout: float = 5.0):
+    html = await _fetch(client, "https://www.google.com/search?q=" + _enc(query) + "&num=10&hl=zh-CN", timeout)
     results = []
     for m in re.finditer(r'<a[^>]*href="(/url\?q=)?(https?://[^"]+)"[^>]*>(.*?)</a>', html, re.S):
         if len(results) >= 6:
@@ -145,59 +215,122 @@ RUNNERS = {
 }
 
 
-async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "", max_results: int = 6, timeout: float = 8) -> list:
-    """按用户所选引擎搜索；多源并发，既尊重引擎选择又保证不卡死。
+async def _guard(coro):
+    """把任意异常/超时吞掉，返回 None，保证 race 不会被单个源拖死。"""
+    try:
+        return await coro
+    except asyncio.CancelledError:
+        return None
+    except Exception:
+        return None
 
-    - 用户选 bing/google：以其爬虫为首选（尊重选择），ddgs 作快速兜底；
-      首选引擎给短超时（默认 5s），超时/失败立即回退 ddgs，避免变慢。
-    - 用户选 duckduckgo（默认）：直接用 ddgs（最快最稳）。
-    - 配置代理时（如访问 Google）额外走原代理模板兜底。
+
+async def _race(coros, timeout: float):
+    """并发跑一组搜索源，返回第一个非空结果；超时或全失败返回 []。
+
+    关键点：一旦拿到结果立刻取消其余任务，不再浪费时间等待。
+    """
+    if not coros:
+        return []
+    tasks = [asyncio.ensure_future(_guard(c)) for c in coros]
+    deadline = time.monotonic() + timeout
+    try:
+        pending = set(tasks)
+        while pending:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                break
+            done, pending = await asyncio.wait(pending, timeout=remain,
+                                               return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                res = t.result()
+                if res:
+                    return res
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        # 让被取消的任务有机会清理，避免 "Task was destroyed" 警告
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return []
+
+
+async def _search_once(client, query: str, engine: str, proxy: str, max_results: int) -> list:
+    """执行一次真实搜索：分级超时，快源优先，慢源兜底。"""
+    started = time.monotonic()
+
+    def _left():
+        return max(0.3, TOTAL_TIMEOUT - (time.monotonic() - started))
+
+    # ---- 第一波：最快的两条路径（并发，谁先出结果用谁）----
+    wave1 = []
+    if DDGS_AVAILABLE:
+        wave1.append(_ddgs_search(query, max_results))
+    wave1.append(search_ddg_api(client, query, timeout=min(FAST_TIMEOUT, _left())))
+
+    results = await _race(wave1, timeout=min(FAST_TIMEOUT, _left()))
+    if results or proxy:
+        if results:
+            return results
+        # 配了代理：走代理模板兜底（Google 等）
+        p = [run(_proxy_search(client, fn, query, proxy)) for fn in (search_google, search_bing)]
+        results = await _race(p, timeout=min(3.0, _left()))
+        return results
+
+    # ---- 第二波：按用户选择的引擎上爬虫兜底 ----
+    wave2 = []
+    if engine == "bing":
+        wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+    elif engine == "google":
+        wave2.append(search_google(client, query, timeout=min(4.0, _left())))
+        wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+    else:                                   # duckduckgo
+        wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
+
+    return await _race(wave2, timeout=_left())
+
+
+async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
+                     max_results: int = 6, timeout: float = TOTAL_TIMEOUT) -> list:
+    """多源并发搜索，取首个非空结果；带缓存 + 并发去重 + 分级超时。
+
+    - 首选 ddgs（直连 DuckDuckGo 接口，秒回、稳定）。
+    - 短超时内无结果才启用 HTML 爬虫兜底（Bing / Google）。
+    - 相同 query 的并发请求共享一次真实搜索，重复查询直接读缓存。
     """
     query = (query or "").strip()
     if not query:
         return []
 
-    async def run(coro, to=timeout):
+    key = _cache_key(query, engine, max_results)
+    hit = _cache_get(key)
+    if hit is not None:
+        return list(hit)
+
+    # 并发去重：同一 key 只放行一次真实网络请求，其余等待同一个 Future
+    loop = asyncio.get_event_loop()
+    existing = _inflight.get(key)
+    if existing is not None:
         try:
-            return await asyncio.wait_for(coro, timeout=to)
+            res = await asyncio.wait_for(asyncio.shield(existing), timeout=timeout + 1)
+            return list(res)[:max_results]
         except Exception:
-            return None
+            return []
 
-    # 用户所选引擎对应的爬虫（duckduckgo 由 ddgs 直连，无需爬虫）
-    preferred = {"bing": search_bing, "google": search_google}.get(engine)
+    fut = loop.create_future()
+    _inflight[key] = fut
+    try:
+        async with httpx.AsyncClient(headers=UA, follow_redirects=True,
+                                     timeout=timeout, limits=_LIMITS) as client:
+            results = (await _search_once(client, query, engine, proxy, max_results))[:max_results]
+    except Exception:
+        results = []
 
-    async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=timeout) as client:
-        # 并发启动：ddgs 兜底 + 用户首选引擎（各自独立计时）
-        t_ddgs = asyncio.create_task(run(_ddgs_search(query, max_results))) if DDGS_AVAILABLE else None
-        t_pref = asyncio.create_task(run(preferred(client, query), to=min(timeout, 5))) if preferred else None
-        try:
-            # 1) 先等用户所选引擎（短超时，尊重选择）
-            if t_pref is not None:
-                res = await t_pref
-                if res:
-                    return res[:max_results]
-            # 2) ddgs 兜底（通常已就绪，秒回）
-            if t_ddgs is not None:
-                res = await t_ddgs
-                if res:
-                    return res[:max_results]
-            # 3) 仍未果：原 DDG 接口/爬虫兜底
-            for fn in (search_ddg_api, search_ddg):
-                res = await run(fn(client, query))
-                if res:
-                    return res[:max_results]
-            # 4) 配置了代理则再走原代理模板兜底
-            if proxy:
-                for fn in (search_google, search_bing, search_ddg_api):
-                    res = await run(_proxy_search(client, fn, query, proxy))
-                    if res:
-                        return res[:max_results]
-        finally:
-            # 提前返回时取消仍在跑的并发任务，避免悬挂告警
-            for t in (t_ddgs, t_pref):
-                if t is not None and not t.done():
-                    t.cancel()
-    return []
+    _cache_set(key, results)
+    if not fut.done():
+        fut.set_result(results)
+    _inflight.pop(key, None)
+    return list(results)
 
 
 async def _proxy_search(client, fn, query, proxy):
@@ -219,8 +352,7 @@ def _base_url(fn, query):
 
 
 async def _parse(fn, client, query, raw):
-    """代理模式下复用各引擎的解析逻辑（通过内存替换）。"""
-    # 简化处理：直接用解析函数的原始目标重新直连解析不可行，改为在代理分支返回原始文本解析
+    """代理模式下复用各引擎的解析逻辑。"""
     name = fn.__name__
     if name == "search_ddg_api":
         import json

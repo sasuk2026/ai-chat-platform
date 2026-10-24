@@ -40,6 +40,26 @@ def normalize_endpoint(api_base: str, action: str = "chat/completions"):
     return url
 
 
+# 搜索上下文上限：太长会显著拖慢模型首字输出（TTFT），这里做硬截断
+MAX_SEARCH_CONTEXT = 6000
+
+
+def build_search_context(searches: list) -> str:
+    """把搜索结果拼成系统提示。限制总长度，避免长摘要拖慢模型首字响应。"""
+    lines, total = [], 0
+    for i, s in enumerate(searches):
+        snippet = (s.get("snippet") or "").strip()
+        piece = f"[{i+1}] {s.get('title','')}\n{s.get('url','')}\n{snippet}"
+        if total + len(piece) > MAX_SEARCH_CONTEXT:
+            remain = MAX_SEARCH_CONTEXT - total
+            if remain > 120:                       # 还有空间就截断最后一条
+                lines.append(piece[:remain] + "…")
+            break
+        lines.append(piece)
+        total += len(piece)
+    return "以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n" + "\n\n".join(lines)
+
+
 # ---------------- OpenAI 协议流式透传 ----------------
 @app.post("/api/chat")
 async def chat(request: Request):
@@ -51,9 +71,14 @@ async def chat(request: Request):
     messages = body.get("messages") or []
     search_enabled = bool(body.get("search"))
 
-    # 联网搜索：取最后一条用户消息作为查询
-    searches = []
-    if search_enabled and messages:
+    # 联网搜索：取最后一条用户消息作为查询。
+    # 关键优化：前端 /api/search 已经搜过一次时，会通过 searchResults 把结果传回来，
+    # 这里直接复用，避免同一个 query 重复搜索两次（原先耗时直接翻倍）。
+    # 用 isinstance 区分"前端没传"和"前端传了空结果"：
+    # 只要前端已经搜过（哪怕是 0 条），后端就不再重复搜索。
+    provided = body.get("searchResults")
+    searches = provided if isinstance(provided, list) else []
+    if search_enabled and messages and not isinstance(provided, list):
         last_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
         if last_user:
             searches = await web_search(
@@ -61,11 +86,9 @@ async def chat(request: Request):
                 engine=body.get("searchEngine") or "duckduckgo",
                 proxy=body.get("proxy") or "",
             )
-            if searches:
-                ctx = "以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n" + "\n\n".join(
-                    f"[{i+1}] {s['title']}\n{s['url']}\n{s['snippet']}" for i, s in enumerate(searches)
-                )
-                messages = [{"role": "system", "content": ctx}] + messages
+    if searches:
+        ctx = build_search_context(searches)
+        messages = [{"role": "system", "content": ctx}] + messages
 
     payload = {
         "model": model,
@@ -200,9 +223,24 @@ async def agentos_status():
 
 
 # ---------------- 静态前端 ----------------
+# 禁用缓存：改完代码重新部署后，用户刷新即可拿到新版本（不会被旧页面/旧门禁卡住）
+_NO_CACHE = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+class NoCacheStatic(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers.update(_NO_CACHE)
+        return resp
+
+
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=_NO_CACHE)
 
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", NoCacheStatic(directory=str(STATIC_DIR)), name="static")
