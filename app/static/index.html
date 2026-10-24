@@ -325,6 +325,22 @@ const PLUGIN_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'create_plugin',
+      description: '由你（AI）亲自撰写并创建一个全新的本地插件。当用户要求「写一个插件」「新建一个插件」「帮我做个 XX 插件」「生成一个能 XX 的插件」「帮我加一个做XX的」时使用。你必须在 content 里写出完整的插件设定正文。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '插件名称，简短好记，例如「英语翻译助手」「SQL 生成规范」' },
+          content: { type: 'string', description: '插件正文：你现在就写出的完整设定内容（纯文本或 Markdown），应包含角色定位、能力范围、执行规则、输出格式、示例等，越具体越好' },
+          enabled: { type: 'boolean', description: '是否创建后立即启用，默认 true' },
+        },
+        required: ['name', 'content'],
+      },
+    },
+  },
 ];
 
 const PLUGIN_TOOL_SYS = '你拥有在对话中为用户管理插件的能力，可使用五个工具：\n' +
@@ -337,6 +353,8 @@ const PLUGIN_TOOL_SYS = '你拥有在对话中为用户管理插件的能力，�
   '- 安装：只有当用户「明确表达要安装/添加/找一个插件或某种能力」时才使用，例如：「帮我装一个翻译插件」「加个画思维导图的」「找个能写周报的插件」。流程：先 search_github_plugins → 挑最相关的一个 → install_plugin → 用一句话告诉用户装了哪个、能做什么。\n' +
   '- 修改/删除：当用户要求改动插件时使用，例如：「把这个插件的 X 参数改成 Y」「插件里那个角色改成老师」「让它别再强调那一点」「关掉翻译插件」「删掉这个插件」「把插件改名叫XX」。\n' +
   '- 不要使用：若用户只是普通聊天、提问或闲聊，不要调用任何工具，正常回答即可。\n\n' +
+  '【优先级（务必遵守）】用户要一个插件时，默认由你用 create_plugin 亲自撰写出来，这是首选。只有在用户明确说「从 GitHub 装」「搜仓库」「找个现成的仓库」时，才允许用 search_github_plugins + install_plugin。绝对不要在用户只是要修改/新建一个插件时去 GitHub 下载。\n' +
+  '【新建插件】用户说「写个插件 / 新建一个插件 / 帮我做一个XX插件 / 加个能XX的」时，直接调 create_plugin，并在 content 里写出完整正文（角色定位、能力范围、执行规则、输出格式、示例），name 起简短好记的名字。不要让用户自己去写。\n' +
   '【修改插件的正确做法（重要）】\n' +
   'a) 先调 list_plugins 确认插件存在，并从 content_preview 看清正文里的相关片段原文。\n' +
   'b) 改某项参数值：用 operation="replace"，old_text 必须按正文中出现的原文一字不改地给出（含大小写、标点、换行），new_text 为改好的新文本。若记不准原文，宁可先用 "append" 追加新设定，或向用户确认，也不要猜。\n' +
@@ -407,6 +425,26 @@ async function runChatStream(messages, tools, el, box) {
   return { content: acc, toolCalls: tcAcc.filter(Boolean), error: null };
 }
 
+// 容错替换：精确 → 忽略大小写 → 忽略空白差异（AI 复制片段时不必一模一样）
+function tryReplaceContent(text, oldT, newT) {
+  const s = (newT === undefined || newT === null) ? '' : String(newT);
+  if (text.indexOf(oldT) >= 0) return text.split(oldT).join(s);
+  try {
+    const esc = oldT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(esc, 'gi');
+    if (re.test(text)) return text.replace(re, s);
+  } catch (e) {}
+  const norm = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const nOld = norm(oldT);
+  if (nOld) {
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (norm(lines[i]).indexOf(nOld) >= 0) { lines[i] = s; return lines.join('\n'); }
+    }
+  }
+  return null;
+}
+
 // 按名称/id 查找插件（支持精确匹配与包含匹配）
 function findPlugin(target) {
   const t = String(target || '').trim().toLowerCase();
@@ -460,15 +498,30 @@ async function executePluginTool(tc, el, box) {
           if (bubble) bubble.innerHTML = renderMD('✅ 已安装插件「' + fn + '」（抓取 ' + (j.files || []).join(', ') + '，' + j.length + ' 字，已启用）');
         }
       }
+    } else if (name === 'create_plugin') {
+      const nm = (args.name || '').trim();
+      const ct = args.content || '';
+      if (!nm || !ct.trim()) {
+        resultText = JSON.stringify({ error: '新建插件必须提供 name 和 content（content 里要写出完整插件正文，不能为空）' });
+      } else {
+        plugins.push({ id: uid(), name: nm, content: ct, enabled: args.enabled !== false, source: 'AI 创建' });
+        savePlugins(); renderPlugins(); renderPlugBadge();
+        resultText = JSON.stringify({ created: true, name: nm, content_length: ct.length, enabled: args.enabled !== false });
+        const b2 = el.querySelector('.bubble');
+        if (b2) b2.innerHTML = renderMD('✅ 已由我创建插件「' + nm + '」（' + ct.length + ' 字，已启用）\n\n（下次发送时生效）');
+      }
     } else if (name === 'list_plugins') {
       if (!plugins.length) {
         resultText = JSON.stringify({ count: 0, plugins: [], note: '当前没有安装任何插件' });
       } else {
         const slim = plugins.map(function (p) {
+          // 关键：必须把正文全文回给模型，否则它看不到原文就无法精确改写某个参数
+          const full = p.content || '';
           return {
             id: p.id, name: p.name, enabled: !!p.enabled, source: p.source || '',
-            content_length: (p.content || '').length,
-            content_preview: (p.content || '').slice(0, 400),
+            content_length: full.length,
+            content: full.slice(0, 14000),
+            truncated: full.length > 14000,
           };
         });
         resultText = JSON.stringify({ count: plugins.length, plugins: slim }, null, 2);
@@ -483,11 +536,18 @@ async function executePluginTool(tc, el, box) {
           const oldT = args.old_text || '';
           const newT = (args.new_text === undefined || args.new_text === null) ? '' : args.new_text;
           if (!oldT) { resultText = JSON.stringify({ error: 'operation=replace 需要提供 old_text' }); }
-          else if ((p.content || '').indexOf(oldT) < 0) {
-            resultText = JSON.stringify({ error: '在插件正文中没有找到该片段，请先用 list_plugins 查看正文原文，再按原文一字不差地替换', not_found: oldT.slice(0, 200) });
-          } else {
-            p.content = (p.content || '').split(oldT).join(newT);
-            doneMsg = '✅ 已修改插件「' + p.name + '」：\n\n「' + oldT.slice(0, 80) + '」→「' + String(newT).slice(0, 80) + '」';
+          else {
+            const hit = tryReplaceContent(p.content || '', oldT, newT);
+            if (hit === null) {
+              resultText = JSON.stringify({
+                error: '正文中没找到该片段。请改用 operation="set_content" 并给出改写后的完整正文（这才是可靠做法），或先用 list_plugins 读全文复制原文。',
+                not_found: oldT.slice(0, 200),
+                current_content: (p.content || '').slice(0, 6000),
+              });
+            } else {
+              p.content = hit;
+              doneMsg = '✅ 已修改插件「' + p.name + '」：\n\n「' + oldT.slice(0, 80) + '」→「' + String(newT).slice(0, 80) + '」';
+            }
           }
         } else if (op === 'set_content') {
           p.content = args.new_text || '';
