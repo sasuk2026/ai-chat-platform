@@ -252,6 +252,161 @@ function renderPlugBadge() {
 }
 function openPlugins() { $('#pluginModal').classList.add('open'); renderPlugins(); }
 
+/* ================= 对话内安装插件：工具定义 + function-calling 循环 ================= */
+const PLUGIN_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'search_github_plugins',
+      description: '在 GitHub 搜索与用户需求相关的插件/工具/仓库。当用户明确要安装、添加或找一个插件/某种能力时使用。返回候选仓库列表（含 full_name、描述、星标、主题）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词，例如「翻译」「代码解释器」「思维导图」' },
+          limit: { type: 'integer', description: '返回候选数量，默认 6，最多 10' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'install_plugin',
+      description: '把指定的 GitHub 仓库安装为当前对话的插件（其仓库内容会自动成为对话设定，使你能按该仓库能力作答）。需在 search_github_plugins 之后调用，传入选定的仓库 full_name。',
+      parameters: {
+        type: 'object',
+        properties: {
+          full_name: { type: 'string', description: '仓库全名，例如 owner/repo' },
+        },
+        required: ['full_name'],
+      },
+    },
+  },
+];
+
+const PLUGIN_TOOL_SYS = '你拥有在对话中为用户安装插件的能力，可使用两个工具：\n' +
+  '1) search_github_plugins：在 GitHub 搜索相关插件/工具/仓库，返回候选列表（含 full_name、描述、星标、主题）。\n' +
+  '2) install_plugin：把指定 GitHub 仓库安装为当前对话的插件（其仓库内容会自动成为你的对话设定）。\n\n' +
+  '【何时使用】只有当用户「明确表达要安装/添加/找一个插件或某种能力」时才使用，例如：「帮我装一个翻译插件」「加个画思维导图的」「找个能写周报的插件」「安装一个可以识别图片的插件」。\n' +
+  '【如何使用】先 search_github_plugins 找候选 → 根据描述/星标/主题挑选最相关的一个 → 再 install_plugin 安装 → 最后用一句话告诉用户你装了哪个、它能做什么。\n' +
+  '【不要使用】若用户只是普通聊天、提问或闲聊，不要调用任何工具，正常回答即可。';
+
+// 调用 /api/chat 并解析 SSE：实时渲染文本，同时累积 tool_calls
+async function runChatStream(messages, tools, el, box) {
+  const body = {
+    apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
+    temperature: settings.temperature, messages: messages, search: false,
+  };
+  if (tools) { body.tools = tools; body.tool_choice = 'auto'; }
+  const resp = await fetch('/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: controller.signal,
+  });
+  if (!resp.ok) {
+    const t = await resp.text();
+    return { error: 'HTTP ' + resp.status + ': ' + t.slice(0, 200) };
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let acc = '';
+  let think = '';
+  const tcAcc = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done || stopFlag) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const j = JSON.parse(data);
+        if (j.error) { acc += (acc ? '\n\n' : '') + '❌ ' + j.error; }
+        const dl = (j.choices && j.choices[0] && j.choices[0].delta) || {};
+        if (dl.reasoning_content) think = (think || '') + dl.reasoning_content;
+        if (dl.content) acc += dl.content;
+        if (dl.tool_calls) {
+          for (const tc of dl.tool_calls) {
+            const idx = tc.index;
+            if (!tcAcc[idx]) tcAcc[idx] = { id: '', type: 'function', function: { name: '', arguments: '' } };
+            if (tc.id) tcAcc[idx].id = tc.id;
+            if (tc.function) {
+              if (tc.function.name) tcAcc[idx].function.name = tc.function.name;
+              if (tc.function.arguments) tcAcc[idx].function.arguments += tc.function.arguments;
+            }
+          }
+        }
+        const bubble = el.querySelector('.bubble');
+        if (bubble) {
+          let html = '';
+          if (think && !acc) html = '<div style="color:#8a90a3;font-style:italic;font-size:12.5px;white-space:pre-wrap;">💭 ' + esc(think.slice(-400)) + '</div>';
+          else if (think && acc) html = '<details style="margin-bottom:6px;"><summary style="font-size:12px;color:#8a90a3;cursor:pointer;">💭 已深度思考（点击展开）</summary><div style="color:#8a90a3;font-size:12px;white-space:pre-wrap;border-left:2px solid #d5d9e6;padding-left:8px;margin-top:6px;">' + esc(think.slice(0,2000)) + '</div></details>';
+          html += renderMD(acc);
+          bubble.innerHTML = html;
+          box.scrollTop = box.scrollHeight;
+        }
+      } catch {}
+    }
+  }
+  return { content: acc, toolCalls: tcAcc.filter(Boolean), error: null };
+}
+
+// 执行 AI 发出的工具调用：搜索 GitHub / 安装插件
+async function executePluginTool(tc, el, box) {
+  const name = (tc.function && tc.function.name) || '';
+  let args = {};
+  try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch {}
+  let resultText = '';
+  try {
+    if (name === 'search_github_plugins') {
+      const q = (args.query || '') + ' plugin';
+      const limit = Math.min(parseInt(args.limit) || 6, 10);
+      const r = await fetch('/api/discover-plugins', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, limit: limit, token: settings.githubToken || '' }),
+      });
+      const j = await r.json();
+      if (!j.ok) { resultText = JSON.stringify({ error: j.error }); }
+      else {
+        const slim = j.results.map(function (x) {
+          return { full_name: x.full_name, name: x.name, description: x.description, stars: x.stars, language: x.language, topics: x.topics };
+        });
+        resultText = JSON.stringify({ count: j.count, candidates: slim }, null, 2);
+        const bubble = el.querySelector('.bubble');
+        if (bubble) bubble.innerHTML = renderMD('🔍 在 GitHub 找到 ' + j.count + ' 个相关仓库，正在挑选最合适的…');
+      }
+    } else if (name === 'install_plugin') {
+      const fn = args.full_name || '';
+      if (!fn) { resultText = JSON.stringify({ error: '缺少 full_name' }); }
+      else {
+        const r = await fetch('/api/agent-browse', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ full_name: fn, token: settings.githubToken || '' }),
+        });
+        const j = await r.json();
+        if (!j.ok) { resultText = JSON.stringify({ error: j.error }); }
+        else {
+          plugins.push({ id: uid(), name: fn, content: j.content, enabled: true, source: fn });
+          savePlugins(); renderPlugins(); renderPlugBadge();
+          resultText = JSON.stringify({ installed: true, full_name: fn, content_length: j.length, files: j.files });
+          const bubble = el.querySelector('.bubble');
+          if (bubble) bubble.innerHTML = renderMD('✅ 已安装插件「' + fn + '」（抓取 ' + (j.files || []).join(', ') + '，' + j.length + ' 字，已启用）');
+        }
+      }
+    } else {
+      resultText = JSON.stringify({ error: '未知工具: ' + name });
+    }
+  } catch (e) {
+    resultText = JSON.stringify({ error: e.message });
+  }
+  return { role: 'tool', tool_call_id: tc.id, content: resultText };
+}
+
 /* ================= 插件发现：AI 搜 GitHub 仓库并安装 ================= */
 function discSetStatus(msg, color) {
   const st = $('#disc-status'); st.style.display = 'block';
@@ -560,7 +715,10 @@ async function generate(text, isFreshSend) {
   if (ap.length) {
     messages.push({ role: 'system', content: '【用户个性化设定（请严格遵守）】\n' + ap.map((p, i) => '◆ 插件「' + p.name + '」：\n' + p.content).join('\n\n') });
   }
-  // 只发送当前保留的历史（编辑/重生后旧内容已从 conv.messages 中移除，模型看不到）
+  // 对话内安装插件：注入工具使用指引（仅当用户已配置 API 时启用）
+  if (settings.apiKey) {
+    messages.push({ role: 'system', content: PLUGIN_TOOL_SYS });
+  }
   conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
 
   const box = $('#msgs');
@@ -569,54 +727,26 @@ async function generate(text, isFreshSend) {
   box.appendChild(el);
   box.scrollTop = box.scrollHeight;
 
-  let acc = '';
-  let think = '';
+  let finalText = '';
   try {
-    const resp = await fetch('/api/chat', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
-        temperature: settings.temperature, messages, search: searchOn,
-        searchEngine: settings.searchEngine, proxy: settings.proxy,
-      }),
-      signal: controller.signal,
-    });
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done || stopFlag) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split('\n\n');
-      buf = parts.pop();
-      for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (data === '[DONE]') continue;
-        try {
-          const j = JSON.parse(data);
-          if (j.error) { acc += (acc ? '\n\n' : '') + '❌ ' + j.error; }
-          const dl = j.choices && j.choices[0] && j.choices[0].delta || {};
-          if (dl.reasoning_content) {
-            think = (think || '') + dl.reasoning_content;
-          }
-          if (dl.content) { acc += dl.content; }
-          const bubble = el.querySelector('.bubble');
-          let html = '';
-          if (think && !acc) html = '<div style="color:#8a90a3;font-style:italic;font-size:12.5px;white-space:pre-wrap;">💭 ' + esc(think.slice(-400)) + '</div>';
-          else if (think && acc) html = '<details style="margin-bottom:6px;"><summary style="font-size:12px;color:#8a90a3;cursor:pointer;">💭 已深度思考（点击展开）</summary><div style="color:#8a90a3;font-size:12px;white-space:pre-wrap;border-left:2px solid #d5d9e6;padding-left:8px;margin-top:6px;">' + esc(think.slice(0,2000)) + '</div></details>';
-          html += renderMD(acc);
-          bubble.innerHTML = html;
-          box.scrollTop = box.scrollHeight;
-        } catch {}
-      }
+    let toolIter = 0;
+    while (toolIter < 4) {
+      const r = await runChatStream(messages, settings.apiKey ? PLUGIN_TOOLS : null, el, box);
+      if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error; break; }
+      if (r.content) finalText += r.content;
+      if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束
+      // 执行工具（搜索 GitHub / 安装插件）
+      setStatus('🔌 正在 GitHub 查找并安装插件…');
+      const tms = [];
+      for (const tc of r.toolCalls) tms.push(await executePluginTool(tc, el, box));
+      messages.push({ role: 'assistant', content: r.content || '', tool_calls: r.toolCalls });
+      for (const tm of tms) messages.push(tm);
+      toolIter++;
     }
   } catch (e) {
-    if (e.name !== 'AbortError') acc += (acc ? '\n\n' : '') + '❌ ' + e.message;
+    if (e.name !== 'AbortError') finalText += (finalText ? '\n\n' : '') + '❌ ' + e.message;
   }
-  ph.content = acc || '(已停止)';
+  ph.content = finalText || '(已停止)';
   ph.sources = sources;
   el.remove();
   conv.messages.push(ph);
