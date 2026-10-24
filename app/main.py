@@ -217,19 +217,25 @@ async def plugin_readme(request: Request):
     headers = {"Accept": "application/vnd.github.raw+json", "User-Agent": "ai-chat-platform"}
     if token:
         headers["Authorization"] = "Bearer " + token
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        # 1) 优先 GitHub API（带 token 时基本不会触发限流）
+        try:
             r = await client.get(f"https://api.github.com/repos/{full_name}/readme", headers=headers)
-            if r.status_code == 404:
-                return JSONResponse({"ok": False, "error": "该仓库没有 README"})
-            r.raise_for_status()
-            text = (r.text or "").strip()
-            if not text:
-                return JSONResponse({"ok": False, "error": "README 内容为空"})
-            text = text[:8000]  # 控制体积，避免提示词过长
-            return JSONResponse({"ok": True, "content": text, "length": len(text)})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:300]})
+            if r.status_code == 200 and r.text.strip():
+                text = r.text.strip()[:8000]
+                return JSONResponse({"ok": True, "content": text, "length": len(text)})
+        except Exception:
+            pass
+        # 2) 兜底：直连 raw.githubusercontent.com（匿名也比 API 宽松，绕开 403 限流）
+        for br in ("main", "master"):
+            try:
+                rr = await client.get(f"https://raw.githubusercontent.com/{full_name}/{br}/README.md")
+                if rr.status_code == 200 and rr.text.strip():
+                    text = rr.text.strip()[:8000]
+                    return JSONResponse({"ok": True, "content": text, "length": len(text)})
+            except Exception:
+                continue
+    return JSONResponse({"ok": False, "error": "无法获取该仓库 README（GitHub 限流，可在「设置」填写 GitHub Token 后重试）"})
 
 
 # ---------------- Agno AgentOS（可选，环境变量配置） ----------------
