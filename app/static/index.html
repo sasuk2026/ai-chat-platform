@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Chat Platform - AI 聊天平台</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<style>
+:root {
+  --bg: #f5f6fa; --panel: #ffffff; --border: #e3e5ec; --text: #1f2430;
+  --muted: #8a90a3; --primary: #6366f1; --primary-h: #818cf8;
+  --user-bg: #6366f1; --ai-bg: #eef0f6; --danger: #dc2626;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+#app { display: flex; height: 100vh; }
+
+/* 侧栏 */
+#sidebar { width: 240px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+#sidebar .brand { padding: 16px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+#convlist { flex: 1; overflow-y: auto; padding: 8px; }
+.conv { padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; transition: background .15s; }
+.conv:hover { background: var(--bg); }
+.conv.active { background: var(--primary); color: #fff; }
+.conv .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv .del { opacity: .5; font-size: 12px; }
+.conv .del:hover { opacity: 1; color: var(--danger); }
+#sidebar .foot { padding: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+
+/* 主区 */
+#main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#topbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
+#topbar .title { font-weight: 600; flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn { background: #eef0f6; color: var(--text); border: none; border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px; transition: background .15s; }
+.btn:hover { background: #e0e3ee; }
+.btn.primary { background: var(--primary); color: #fff; }
+.btn.primary:hover { background: var(--primary-h); }
+.btn.danger { background: #fee2e2; color: var(--danger); }
+label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; color: var(--muted); }
+
+#msgs { flex: 1; overflow-y: auto; padding: 24px; }
+.msg { max-width: 720px; margin: 0 auto 18px; line-height: 1.7; font-size: 14px; word-break: break-word; }
+.msg .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.msg .bubble { padding: 11px 14px; border-radius: 12px; }
+.msg.user .bubble { background: var(--user-bg); color: #fff; border-bottom-right-radius: 3px; white-space: pre-wrap; }
+.msg.ai .bubble { background: var(--ai-bg); border-bottom-left-radius: 3px; }
+.msg.ai .bubble pre { background: #1e1f24; color: #e5e7eb; padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; margin: 8px 0; }
+.msg.ai .bubble code { font-size: 12.5px; }
+.msg.ai .bubble :not(pre) > code { background: #e2e5ef; padding: 1px 5px; border-radius: 4px; }
+.msg.ai .bubble a { color: var(--primary); }
+.msg .sources { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.msg .sources a { color: var(--primary); text-decoration: none; margin-right: 10px; }
+.empty { text-align: center; color: var(--muted); margin-top: 18vh; }
+.empty h2 { font-size: 20px; margin-bottom: 8px; color: var(--text); }
+
+#inputbar { padding: 14px 24px 18px; background: var(--panel); border-top: 1px solid var(--border); }
+#inputwrap { max-width: 720px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+#input { flex: 1; border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit; resize: none; max-height: 140px; min-height: 44px; outline: none; transition: border-color .15s; }
+#input:focus { border-color: var(--primary); }
+#status { max-width: 720px; margin: 0 auto 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
+
+/* 设置弹窗 */
+#settings { position: fixed; inset: 0; background: rgba(15,17,26,.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+#settings.open { display: flex; }
+#settings .card { background: var(--panel); border-radius: 16px; padding: 24px; width: 480px; max-width: calc(100vw - 32px); max-height: 85vh; overflow-y: auto; }
+#settings h3 { margin-bottom: 14px; }
+#settings label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+#settings input, #settings select { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font-size: 13px; outline: none; font-family: inherit; }
+#settings input:focus, #settings select:focus { border-color: var(--primary); }
+#settings .row { display: flex; gap: 10px; margin-top: 18px; }
+#settings .hint { font-size: 11px; color: var(--muted); margin-top: 14px; line-height: 1.6; }
+
+@media (max-width: 700px) {
+  #sidebar { position: fixed; left: -260px; top: 0; bottom: 0; z-index: 40; transition: left .25s; }
+  #sidebar.open { left: 0; box-shadow: 0 0 30px rgba(0,0,0,.2); }
+  #menuBtn { display: inline-block !important; }
+}
+#menuBtn { display: none; }
+#scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 39; }
+#scrim.show { display: block; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="scrim"></div>
+  <div id="sidebar">
+    <div class="brand">🤖 AI Chat Platform</div>
+    <div id="convlist"></div>
+    <div class="foot">
+      <button class="btn primary" id="newBtn">＋ 新对话</button>
+      <button class="btn" id="cfgBtn">⚙️ 设置</button>
+    </div>
+  </div>
+  <div id="main">
+    <div id="topbar">
+      <button class="btn" id="menuBtn">☰</button>
+      <span class="title" id="title">新对话</span>
+      <label class="search-toggle"><input type="checkbox" id="searchToggle">🌐 联网搜索</label>
+    </div>
+    <div id="msgs"></div>
+    <div id="inputbar">
+      <div id="status"></div>
+      <div id="inputwrap">
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="btn primary" id="sendBtn">发送</button>
+        <button class="btn" id="stopBtn" style="display:none;">■ 停止</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="settings">
+  <div class="card">
+    <h3>⚙️ 设置（OpenAI 协议）</h3>
+    <label>API 地址（Base URL）</label>
+    <input id="s-base" placeholder="https://api.openai.com/v1">
+    <label>API Key（仅保存在你的浏览器本地）</label>
+    <input id="s-key" type="password" placeholder="sk-...">
+    <label>模型</label>
+    <input id="s-model" placeholder="gpt-4o-mini">
+    <label>Temperature (0-2)</label>
+    <input id="s-temp" type="number" step="0.1" min="0" max="2" value="0.7">
+    <label>搜索引擎</label>
+    <select id="s-engine">
+      <option value="duckduckgo">DuckDuckGo</option>
+      <option value="bing">微软 Bing</option>
+      <option value="google">谷歌 Google</option>
+    </select>
+    <label>网络代理（访问 Google 等，可选）</label>
+    <input id="s-proxy" placeholder="例如 https://corsproxy.io/?{url}">
+    <div class="hint">
+      兼容任何 OpenAI 协议服务：OpenAI / DeepSeek / 通义千问 / Ollama / OpenRouter / 中转站。
+      代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
+      平台还内置 Agno AgentOS 智能体接口（/agno，由服务端环境变量配置）。
+    </div>
+    <div class="row">
+      <button class="btn primary" id="saveBtn">保存</button>
+      <button class="btn" id="cancelBtn">取消</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ================= 存储层 ================= */
+const Store = {
+  get settings() {
+    try { return JSON.parse(localStorage.getItem('aicp_settings')) || {}; } catch { return {}; }
+  },
+  saveSettings(s) { localStorage.setItem('aicp_settings', JSON.stringify(s)); },
+  convs() { try { return JSON.parse(localStorage.getItem('aicp_convs')) || []; } catch { return []; } },
+  getConv(id) { try { return JSON.parse(localStorage.getItem('aicp_conv_' + id)); } catch { return null; } },
+  saveConv(c) {
+    c.updatedAt = Date.now();
+    localStorage.setItem('aicp_conv_' + c.id, JSON.stringify(c));
+    const list = Store.convs().filter(x => x.id !== c.id);
+    list.unshift({ id: c.id, title: c.title, updatedAt: c.updatedAt });
+    list.sort((a, b) => b.updatedAt - a.updatedAt);
+    localStorage.setItem('aicp_convs', JSON.stringify(list.slice(0, 100)));
+  },
+  delConv(id) {
+    localStorage.removeItem('aicp_conv_' + id);
+    localStorage.setItem('aicp_convs', JSON.stringify(Store.convs().filter(c => c.id !== id)));
+  },
+};
+
+/* ================= 状态 ================= */
+let settings = Object.assign({
+  apiBase: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.7,
+  searchEngine: 'duckduckgo', proxy: '',
+}, Store.settings);
+let conv = null;
+let busy = false;
+let stopFlag = false;
+let controller = null;
+
+const $ = s => document.querySelector(s);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/* ================= Markdown ================= */
+function esc(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function renderMD(md) {
+  let h = esc(md);
+  h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, l, c) => '<pre><code>' + c + '</code></pre>');
+  h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  h = h.replace(/^###### (.*)$/gm, '<h6>$1</h6>').replace(/^##### (.*)$/gm, '<h5>$1</h5>')
+       .replace(/^#### (.*)$/gm, '<h4>$1</h4>').replace(/^### (.*)$/gm, '<h3>$1</h3>')
+       .replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  h = h.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  h = h.replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>');
+  h = h.replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '<ul>$1</ul>');
+  return h.split(/\n{2,}/).map(p => /^<(h\d|ul|pre)/.test(p.trim()) ? p : '<p>' + p.replace(/\n/g, '<br>') + '</p>').join('');
+}
+
+/* ================= 会话 UI ================= */
+function newConv() {
+  conv = { id: uid(), title: '新对话', messages: [] };
+  renderConvs(); renderMsgs(); renderTitle();
+}
+function loadConv(id) {
+  const c = Store.getConv(id);
+  if (c) { conv = c; renderConvs(); renderMsgs(); renderTitle(); closeSidebar(); }
+}
+function renderTitle() { $('#title').textContent = conv.title; }
+function renderConvs() {
+  const box = $('#convlist');
+  box.innerHTML = '';
+  if (conv && !Store.convs().find(c => c.id === conv.id)) {
+    const d = document.createElement('div');
+    d.className = 'conv active';
+    d.innerHTML = '<span class="name">💬 ' + conv.title + ' *</span>';
+    box.appendChild(d);
+  }
+  Store.convs().forEach(c => {
+    const d = document.createElement('div');
+    d.className = 'conv' + (conv && c.id === conv.id ? ' active' : '');
+    const n = document.createElement('span');
+    n.className = 'name'; n.textContent = '💬 ' + (c.title || '未命名');
+    const del = document.createElement('span');
+    del.className = 'del'; del.textContent = '🗑';
+    del.onclick = e => { e.stopPropagation(); Store.delConv(c.id); if (conv.id === c.id) newConv(); else renderConvs(); };
+    d.appendChild(n); d.appendChild(del);
+    d.onclick = () => loadConv(c.id);
+    box.appendChild(d);
+  });
+}
+function msgEl(m) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + (m.role === 'user' ? 'user' : 'ai');
+  const who = document.createElement('div');
+  who.className = 'who'; who.textContent = m.role === 'user' ? '你' : 'AI';
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  if (m.role === 'user') b.textContent = m.content;
+  else {
+    b.innerHTML = renderMD(m.content || '');
+    if (m.sources && m.sources.length) {
+      const s = document.createElement('div');
+      s.className = 'sources';
+      s.innerHTML = '🌐 搜索来源：' + m.sources.map(x => '<a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.title.slice(0, 18)) + '</a>').join('');
+      b.appendChild(s);
+    }
+  }
+  d.appendChild(who); d.appendChild(b);
+  return d;
+}
+function renderMsgs() {
+  const box = $('#msgs');
+  box.innerHTML = '';
+  if (!conv.messages.length) {
+    box.innerHTML = '<div class="empty"><h2>🤖 开始新的对话</h2><p>先点左下角 ⚙️ 设置 填入你的 OpenAI 协议 API 地址和 Key</p></div>';
+    return;
+  }
+  conv.messages.forEach(m => box.appendChild(msgEl(m)));
+  box.scrollTop = box.scrollHeight;
+}
+function setStatus(t) { $('#status').textContent = t || ''; }
+
+/* ================= 发送（SSE 流式） ================= */
+async function send() {
+  if (busy) return;
+  const input = $('#input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (!settings.apiBase || !settings.apiKey) { setStatus('⚠️ 请先点击左下角 ⚙️ 设置 配置 API 地址和 Key'); openSettings(); return; }
+  input.value = ''; input.style.height = 'auto';
+  busy = true; stopFlag = false;
+  controller = new AbortController();
+  $('#sendBtn').style.display = 'none'; $('#stopBtn').style.display = '';
+  setStatus('');
+
+  conv.messages.push({ role: 'user', content: text });
+  if (conv.title === '新对话') {
+    conv.title = text.slice(0, 20) + (text.length > 20 ? '…' : '');
+    renderTitle();
+  }
+  renderMsgs(); Store.saveConv(conv); renderConvs();
+
+  const searchOn = $('#searchToggle').checked;
+  let sources = [];
+  const messages = [];
+  if (searchOn) {
+    setStatus('🌐 正在搜索网页…');
+    try {
+      const r = await fetch('/api/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: text, engine: settings.searchEngine, proxy: settings.proxy }),
+        signal: controller.signal,
+      });
+      const j = await r.json();
+      sources = j.results || [];
+    } catch {}
+    if (sources.length) {
+      messages.push({ role: 'system', content: '以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n' +
+        sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') });
+    }
+    setStatus('');
+  }
+  conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
+
+  const box = $('#msgs');
+  const ph = { role: 'assistant', content: '' };
+  const el = msgEl(ph);
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+
+  let acc = '';
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
+        temperature: settings.temperature, messages, search: searchOn,
+        searchEngine: settings.searchEngine, proxy: settings.proxy,
+      }),
+      signal: controller.signal,
+    });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || stopFlag) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') continue;
+        try {
+          const j = JSON.parse(data);
+          if (j.error) { acc += (acc ? '\n\n' : '') + '❌ ' + j.error; }
+          const d = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+          if (d) acc += d;
+          el.querySelector('.bubble').innerHTML = renderMD(acc);
+          box.scrollTop = box.scrollHeight;
+        } catch {}
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') acc += (acc ? '\n\n' : '') + '❌ ' + e.message;
+  }
+  ph.content = acc || '(已停止)';
+  ph.sources = sources;
+  el.remove();
+  box.appendChild(msgEl(ph));
+  box.scrollTop = box.scrollHeight;
+  conv.messages.push(ph);
+  Store.saveConv(conv); renderConvs();
+  busy = false;
+  $('#sendBtn').style.display = ''; $('#stopBtn').style.display = 'none';
+  setStatus('');
+}
+
+/* ================= 设置 ================= */
+function openSettings() {
+  $('#s-base').value = settings.apiBase || '';
+  $('#s-key').value = settings.apiKey || '';
+  $('#s-model').value = settings.model || '';
+  $('#s-temp').value = settings.temperature;
+  $('#s-engine').value = settings.searchEngine || 'duckduckgo';
+  $('#s-proxy').value = settings.proxy || '';
+  $('#settings').classList.add('open');
+}
+function closeSettings() { $('#settings').classList.remove('open'); }
+function saveSettings() {
+  settings = {
+    apiBase: $('#s-base').value.trim(),
+    apiKey: $('#s-key').value.trim(),
+    model: $('#s-model').value.trim() || 'gpt-4o-mini',
+    temperature: parseFloat($('#s-temp').value) || 0.7,
+    searchEngine: $('#s-engine').value,
+    proxy: $('#s-proxy').value.trim(),
+  };
+  Store.saveSettings(settings);
+  closeSettings();
+}
+
+/* ================= 移动端侧栏 ================= */
+function closeSidebar() { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('show'); }
+
+/* ================= 初始化 ================= */
+$('#newBtn').onclick = () => { newConv(); closeSidebar(); };
+$('#cfgBtn').onclick = () => openSettings();
+$('#saveBtn').onclick = saveSettings;
+$('#cancelBtn').onclick = closeSettings;
+$('#sendBtn').onclick = send;
+$('#stopBtn').onclick = () => { stopFlag = true; if (controller) controller.abort(); };
+$('#menuBtn').onclick = () => { $('#sidebar').classList.add('open'); $('#scrim').classList.add('show'); };
+$('#scrim').onclick = closeSidebar;
+$('#settings').addEventListener('click', e => { if (e.target.id === 'settings') closeSettings(); });
+const input = $('#input');
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+});
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+});
+
+newConv();
+fetch('/api/agentos-status').then(r => r.json()).then(j => {
+  if (j.agentos) setStatus('💡 平台已内置 Agno AgentOS 智能体接口（/agno）');
+}).catch(() => {});
+</script>
+</body>
+</html>
