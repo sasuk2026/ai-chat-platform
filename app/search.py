@@ -283,43 +283,85 @@ async def _race(coros, timeout: float):
     return []
 
 
+def _make_proxy_client(proxy: str, timeout: float):
+    """把代理栏填的内容当作真正的代理服务器（http/https/socks5）来用。
+
+    兼容 httpx 新旧参数名（新版 proxy=，旧版 proxies=）；失败返回 None，
+    调用方会自动回落到直连搜索，不会因为代理不可用就搜不出东西。
+    """
+    kwargs = dict(headers=UA, follow_redirects=True, timeout=timeout, limits=_LIMITS)
+    for key in ("proxy", "proxies"):
+        try:
+            return httpx.AsyncClient(**kwargs, **{key: proxy})
+        except TypeError:
+            continue
+        except Exception:
+            return None
+    return None
+
+
 async def _search_once(client, query: str, engine: str, proxy: str, max_results: int) -> list:
-    """执行一次真实搜索：分级超时，快源优先，慢源兜底。"""
+    """执行一次真实搜索：分级超时，快源优先，慢源兜底。
+
+    重要修正：
+    1. 代理支持两种填法——「真代理服务器」（http/https/socks5）与「URL 模板」（含 {url}）。
+       以前把代理一律当模板拼 URL，导致填了代理就搜不出东西（且用了一个不存在的 run()，直接崩）。
+    2. 代理跑不出结果时，必须继续走直连兜底（Bing/DDG），绝不就此返回空。
+    """
     started = time.monotonic()
 
     def _left():
         return max(0.3, TOTAL_TIMEOUT - (time.monotonic() - started))
 
-    # ---- 第一波：最快的两条路径（并发，谁先出结果用谁）----
-    wave1 = []
-    if DDGS_AVAILABLE:
-        wave1.append(_ddgs_search(query, max_results))
-    wave1.append(search_ddg_api(client, query, timeout=min(FAST_TIMEOUT, _left())))
+    # 真代理服务器（非模板）→ 单独起一个走代理的 client
+    pclient = None
+    if proxy and "{url}" not in proxy:
+        pclient = _make_proxy_client(proxy, min(TOTAL_TIMEOUT, _left()))
 
-    results = await _race(wave1, timeout=min(FAST_TIMEOUT, _left()))
-    if results or proxy:
+    try:
+        # ---- 第一波：最快路径并发 ----
+        wave1 = []
+        if DDGS_AVAILABLE:
+            wave1.append(_ddgs_search(query, max_results))
+        wave1.append(search_ddg_api(client, query, timeout=min(FAST_TIMEOUT, _left())))
+        if pclient is not None:
+            wave1.append(search_ddg_api(pclient, query, timeout=min(FAST_TIMEOUT, _left())))
+            wave1.append(search_bing(pclient, query, timeout=min(FAST_TIMEOUT, _left())))
+
+        results = await _race(wave1, timeout=min(FAST_TIMEOUT, _left()))
         if results:
             return results
-        # 配了代理：走代理模板兜底（Google 等）
-        p = [run(_proxy_search(client, fn, query, proxy)) for fn in (search_google, search_bing)]
-        results = await _race(p, timeout=min(3.0, _left()))
-        return results
 
-    # ---- 第二波：按用户选择的引擎上爬虫兜底 ----
-    # 注意：DuckDuckGo 的接口/网页近几年经常返回空或被引流，所以无论用户选了哪个引擎，
-    #       Bing 都要进兜底列表，否则「默认引擎」会直接搜不出任何东西。
-    wave2 = []
-    if engine == "bing":
-        wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
-        wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
-    elif engine == "google":
-        wave2.append(search_google(client, query, timeout=min(4.0, _left())))
-        wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
-    else:                                   # duckduckgo → 必须补 Bing 兜底
-        wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
-        wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+        # ---- 模板型代理兜底（只有含 {url} 才适用）----
+        if proxy and "{url}" in proxy:
+            results = await _race(
+                [_proxy_search(client, fn, query, proxy) for fn in (search_bing, search_google)],
+                timeout=min(3.0, _left()),
+            )
+            if results:
+                return results
 
-    return await _race(wave2, timeout=_left())
+        # ---- 第二波：直连爬虫兜底（无论是否配代理，都要走到这一步）----
+        wave2 = []
+        if engine == "bing":
+            wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+            wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
+        elif engine == "google":
+            wave2.append(search_google(client, query, timeout=min(4.0, _left())))
+            wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+        else:                                   # duckduckgo → 必须补 Bing 兜底
+            wave2.append(search_ddg(client, query, timeout=min(4.0, _left())))
+            wave2.append(search_bing(client, query, timeout=min(4.0, _left())))
+        if pclient is not None:
+            wave2.append(search_bing(pclient, query, timeout=min(4.0, _left())))
+
+        return await _race(wave2, timeout=_left())
+    finally:
+        if pclient is not None:
+            try:
+                await pclient.aclose()
+            except Exception:
+                pass
 
 
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
