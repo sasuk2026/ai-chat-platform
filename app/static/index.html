@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>AI Chat Platform - AI 聊天平台</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
 <style>
@@ -12,8 +12,8 @@
   --user-bg: #6366f1; --ai-bg: #eef0f6; --danger: #dc2626;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
-#app { display: flex; height: 100vh; }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); height: 100vh; height: 100dvh; overflow: hidden; }
+#app { display: flex; height: 100vh; height: 100dvh; }
 
 /* 侧栏 */
 #sidebar { width: 240px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -58,7 +58,7 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 .empty { text-align: center; color: var(--muted); margin-top: 18vh; }
 .empty h2 { font-size: 20px; margin-bottom: 8px; color: var(--text); }
 
-#inputbar { padding: 14px 24px 18px; background: var(--panel); border-top: 1px solid var(--border); }
+#inputbar { padding: 14px 24px calc(18px + env(safe-area-inset-bottom, 0px) + var(--kb, 0px)); background: var(--panel); border-top: 1px solid var(--border); }
 #inputwrap { max-width: 720px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
 #input { flex: 1; border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit; resize: none; max-height: 140px; min-height: 44px; outline: none; transition: border-color .15s; }
 #input:focus { border-color: var(--primary); }
@@ -105,16 +105,6 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 </style>
 </head>
 <body>
-<div id="gate" style="position:fixed;inset:0;background:#14161d;z-index:999;display:flex;align-items:center;justify-content:center;">
-  <div style="background:#1e1f24;padding:32px;border-radius:16px;width:320px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.5);">
-    <div style="font-size:40px;margin-bottom:10px;">🔒</div>
-    <div style="color:#e5e7eb;font-size:16px;font-weight:600;margin-bottom:6px;">AI Chat Platform</div>
-    <div style="color:#8a90a3;font-size:12px;margin-bottom:16px;">请输入访问密码</div>
-    <input id="gatePwd" type="password" placeholder="密码" style="width:100%;background:#2c2d33;color:#e5e7eb;border:1px solid #3b3c44;border-radius:10px;padding:10px 12px;font-size:14px;outline:none;text-align:center;">
-    <button id="gateGo" style="width:100%;margin-top:12px;background:#6366f1;color:#fff;border:none;border-radius:10px;padding:10px;font-size:14px;cursor:pointer;">解锁</button>
-    <div id="gateErr" style="color:#f87171;font-size:12px;margin-top:8px;min-height:16px;"></div>
-  </div>
-</div>
 <div id="app">
   <div id="scrim"></div>
   <div id="sidebar">
@@ -203,23 +193,7 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 </div>
 
 <script>
-/* ================= 访问门禁（sessionStorage 记忆，输对后本次会话不再问） ================= */
-(function gate() {
-  if (sessionStorage.getItem('aicp_gate') === 'ok') { const g = document.getElementById('gate'); if (g) g.remove(); return; }
-  const inp = document.getElementById('gatePwd');
-  function go() {
-    if (inp.value === '834298') {
-      sessionStorage.setItem('aicp_gate', 'ok');
-      document.getElementById('gate').remove();
-    } else {
-      document.getElementById('gateErr').textContent = '❌ 密码错误，请重试';
-      inp.value = ''; inp.focus();
-    }
-  }
-  document.getElementById('gateGo').onclick = go;
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-  inp.focus();
-})();
+/* ================= 访问门禁已移除（应用锁已解，进页面即可直接使用） ================= */
 
 /* ================= 插件系统 ================= */
 let plugins = JSON.parse(localStorage.getItem('aicp_plugins') || '[]');
@@ -633,6 +607,19 @@ input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 140) + 'px';
 });
+
+/* 移动端：软键盘弹出时把输入框顶到键盘上方，避免被遮挡 */
+(function mobileKeyboard() {
+  if (!window.visualViewport) return;
+  const vv = window.visualViewport;
+  const apply = () => {
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--kb', kb + 'px');
+  };
+  vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', apply);
+  apply();
+})();
 
 newConv();
 renderPlugBadge();
