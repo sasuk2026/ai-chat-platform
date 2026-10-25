@@ -343,19 +343,23 @@ const PLUGIN_TOOLS = [
   },
 ];
 
-const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个网页聊天应用里：没有终端、没有文件系统、不能执行任何命令。绝对禁止输出 find / ls / cat / grep 等 shell 命令去"查找或修改插件"——这些代码不会被执行，用户只会看到一堆没用的代码。\n' +
-'你可以管理用户的插件（新建 / 修改 / 删除 / 查看）。如果你能使用工具调用（function calling）就直接用工具；否则输出下面的指令块（前端会自动执行并把结果回传给你）：\n' +
-'<<<PLUGIN\n{"action":"list"}\nPLUGIN>>>\n' +
-'<<<PLUGIN\n{"action":"create","name":"插件名","content":"完整插件正文"}\nPLUGIN>>>\n' +
-'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"set_content","content":"完整新正文"}\nPLUGIN>>>\n' +
-'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"append","content":"追加的内容"}\nPLUGIN>>>\n' +
-'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"rename","new_name":"新名字"}\nPLUGIN>>>\n' +
-'<<<PLUGIN\n{"action":"update","target":"插件名","mode":"set_enabled","enabled":false}\nPLUGIN>>>\n' +
-'<<<PLUGIN\n{"action":"delete","target":"插件名"}\nPLUGIN>>>\n\n' +
-'【动作说明】create=新建插件（content 由你亲自撰写完整正文：角色、能力、规则、输出格式）；update 的 mode：set_content 整体重写 / append 追加 / rename 改名 / set_enabled 开关；delete=删除。指令块里必须是合法 JSON（content 里的换行要写成 \\n 转义）。\n' +
-'【默认行为（重要）】用户要写/新建/修改/删除插件时，由你直接输出指令块，正文内容你自己完整撰写，不要让用户自己写。只有用户明确说「从 GitHub 装」「搜仓库」时才用 search_github_plugins / install_plugin 工具，否则禁止去 GitHub 下载。\n' +
-'【修改插件的推荐流程】先输出 {"action":"list"} 拿到全部插件全文 → 再基于全文用 mode="set_content" 输出改好的完整新正文（最可靠），或 append 追加新设定。执行结果系统会回传给你，你再向用户确认。\n' +
-'【禁止】不要输出任何 shell 命令，不要假装在运行程序，不要说"我无法修改"。你完全可以修改插件——用指令块。';
+const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个网页聊天应用里：没有终端、没有文件系统、不能执行任何命令。绝对禁止输出 find / ls / cat / grep 等 shell 命令去"查找或修改插件"——这些代码不会被执行。\n' +
+'你可以管理用户的插件（新建 / 修改 / 删除 / 查看）。若你能用工具调用（function calling）就用工具；否则输出指令块，前端会真实执行并把结果回传给你。\n' +
+'推荐使用【行协议】：正文可以直接多行书写，不需要 \\n 转义，最不容易出错：\n' +
+'<<<PLUGIN\naction=update\ntarget=插件名\nmode=set_content\ncontent=\n这里直接写改好的完整正文，可以随意换行\nPLUGIN>>>\n' +
+'其它动作：\n' +
+'<<<PLUGIN\naction=list\nPLUGIN>>>\n' +
+'<<<PLUGIN\naction=create\nname=插件名\ncontent=\n这里是完整正文\nPLUGIN>>>\n' +
+'<<<PLUGIN\naction=update\ntarget=插件名\nmode=append\ncontent=\n要追加的设定\nPLUGIN>>>\n' +
+'<<<PLUGIN\naction=update\ntarget=插件名\nmode=rename\nnew_name=新名字\nPLUGIN>>>\n' +
+'<<<PLUGIN\naction=update\ntarget=插件名\nmode=set_enabled\nenabled=false\nPLUGIN>>>\n' +
+'<<<PLUGIN\naction=delete\ntarget=插件名\nPLUGIN>>>\n\n' +
+'【修改现有插件的关键规则】\n' +
+'1) target 必须填「当前已安装的插件」清单里给出的准确名称（清单见下方），不要自己编造、不要改写。\n' +
+'2) 最可靠的改法是 mode=set_content：把原文改好后输出完整新正文。可先 action=list 拿到全文。\n' +
+'3) 只想加规则用 mode=append；改名字用 rename；开关用 set_enabled。避免用 replace（容易匹配失败）。\n' +
+'【新建插件】用户要一个新插件时，用 action=create，正文由你亲自完整撰写，不要让用户自己写。\n' +
+'【禁止】不要输出任何 shell 命令，不要假装运行程序，不要说"我无法修改"。你完全可以修改——用指令块。';
 
 // 调用 /api/chat 并解析 SSE：实时渲染文本，同时累积 tool_calls
 async function runChatStream(messages, tools, el, box) {
@@ -442,14 +446,40 @@ function tryReplaceContent(text, oldT, newT) {
 }
 
 // 解析 AI 回复中的 <<<PLUGIN ... PLUGIN>>> 指令块（文本协议，不依赖 function calling）
+function parsePluginBlock(raw) {
+  let t = String(raw || '').trim().replace(/^```[a-zA-Z]*\s*/, '').replace(/```$/, '').trim();
+  // 1) 标准 JSON
+  try { return JSON.parse(t); } catch (e) {}
+  // 2) JSON 容错：中文引号、尾随逗号
+  try {
+    var t2 = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/,\s*([}\]])/g, '$1');
+    return JSON.parse(t2);
+  } catch (e) {}
+  // 3) 行协议：action=/target=/mode=/name=/new_name=/enabled=/content=（正文可多行）
+  var lines = t.split('\n'), obj = {}, ci = -1;
+  for (var i = 0; i < lines.length; i++) {
+    var ln = lines[i];
+    var m = ln.match(/^\s*(action|target|mode|name|new_name|enabled)\s*[:=]\s*(.*)$/);
+    if (m) { obj[m[1]] = m[2].trim().replace(/^["']+|["']+$/g, ''); continue; }
+    if (/^\s*content\s*[:=]\s*/i.test(ln)) { ci = i; break; }
+  }
+  if (ci >= 0) {
+    obj.content = lines.slice(ci).join('\n').replace(/^\s*content\s*[:=]\s*/i, '').replace(/\s*PLUGIN\s*$/, '').trim();
+  }
+  if (obj.enabled !== undefined) obj.enabled = String(obj.enabled).toLowerCase() === 'true';
+  return (obj.action || obj.target) ? obj : null;
+}
+
 function extractPluginActions(text) {
   const re = /<<<\s*PLUGIN\s*([\s\S]*?)\s*PLUGIN\s*>>>/g;
   const actions = [];
+  const bad = [];
   let m;
   while ((m = re.exec(String(text || '')))) {
-    try { actions.push(JSON.parse(m[1])); } catch (e) {}
+    const o = parsePluginBlock(m[1]);
+    if (o && o.action) actions.push(o); else bad.push(String(m[1]).slice(0, 150));
   }
-  return { actions: actions, cleaned: String(text || '').replace(re, '').trim() };
+  return { actions: actions, bad: bad, cleaned: String(text || '').replace(re, '').trim() };
 }
 
 // 执行一条文本协议插件指令
@@ -951,7 +981,16 @@ async function generate(text, isFreshSend) {
   const lastUserMsg = (conv.messages || []).filter(m => m.role === 'user').pop();
   const plugIntent = /(插件|plugin|install)/i.test(lastUserMsg ? lastUserMsg.content : '');
   if (settings.apiKey && plugIntent) {
-    messages.push({ role: 'system', content: PLUGIN_TOOL_SYS });
+    let sysTxt = PLUGIN_TOOL_SYS;
+    if (plugins.length) {
+      var brief = plugins.map(function (p, i) {
+        return '[' + (i + 1) + '] 名称：' + p.name + '（' + (p.enabled ? '启用中' : '停用中') + '）\n正文：\n' + (p.content || '').slice(0, 4000);
+      }).join('\n\n');
+      sysTxt += '\n\n【当前已安装的插件】（修改/删除时 target 必须用下面这些准确名称，不要编造）：\n' + brief;
+    } else {
+      sysTxt += '\n\n【当前没有任何插件】';
+    }
+    messages.push({ role: 'system', content: sysTxt });
   }
   conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
 
@@ -970,6 +1009,14 @@ async function generate(text, isFreshSend) {
       if (r.content) finalText += r.content;
       // ---- 文本协议兜底：模型不支持 function calling 时也能新建/修改/删除插件 ----
       const acts = extractPluginActions(finalText);
+      // 指令块写了但解析不出来 → 回传错误让模型用行协议重试，绝不静默吞掉
+      if (!acts.actions.length && acts.bad.length) {
+        finalText = acts.cleaned;
+        messages.push({ role: 'assistant', content: r.content || '' });
+        messages.push({ role: 'user', content: '【系统回执⚠️】你刚才的插件指令块没有解析成功，插件实际没有被改动。请严格按行协议重写一遍（不要用 JSON，正文直接换行写）：\n<<<PLUGIN\naction=update\ntarget=（必须填「当前已安装的插件」清单里的准确名称）\nmode=set_content\ncontent=\n（改好的完整正文，可多行）\nPLUGIN>>>\n' + '你刚才写的是：' + acts.bad.join(' | ') });
+        toolIter++;
+        continue;
+      }
       if (acts.actions.length) {
         const results = acts.actions.map(applyPluginAction);
         finalText = acts.cleaned;
