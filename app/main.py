@@ -88,6 +88,16 @@ async def chat(request: Request):
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = tool_choice or "auto"
+    # 透传「推理/思考开关」：
+    # - Agnes AI 用 chat_template_kwargs.enable_thinking
+    # - DashScope/Qwen 用顶层 enable_thinking
+    # 两种都发，不认识的参数服务端会忽略
+    if "enable_thinking" in body:
+        payload["enable_thinking"] = bool(body.get("enable_thinking"))
+    if "chat_template_kwargs" in body:
+        ctk = body.get("chat_template_kwargs")
+        if isinstance(ctk, dict):
+            payload["chat_template_kwargs"] = ctk
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -400,6 +410,12 @@ async def agent_browse(request: Request):
 
 
 # ---------------- Agno AgentOS（可选，环境变量配置） ----------------
+# 推理模式开关（Agno 官方现版本用法：挂 reasoning_model 即开启独立推理阶段；
+# 旧版 reasoning=True 已废弃。env: AGENT_REASONING=1 + AGENT_REASONING_MODEL=gpt-5.2）
+AGENT_REASONING = os.environ.get("AGENT_REASONING", "").strip().lower() in ("1", "true", "yes", "on")
+AGENT_REASONING_MODEL = (os.environ.get("AGENT_REASONING_MODEL") or "").strip()
+AGENT_REASONING_EFFORT = (os.environ.get("AGENT_REASONING_EFFORT") or "medium").strip()
+
 AGENTOS_AVAILABLE = False
 try:
     from agno.agent import Agent
@@ -407,12 +423,28 @@ try:
     from agno.os import AgentOS
     from agno.tools.duckduckgo import DuckDuckGoTools
 
+    agent_kwargs = {}
+    reasoning_model = None
+    if AGENT_REASONING and AGENT_REASONING_MODEL:
+        try:
+            from agno.models.openai import OpenAIResponses
+            reasoning_model = OpenAIResponses(
+                id=AGENT_REASONING_MODEL,
+                reasoning_effort=AGENT_REASONING_EFFORT,
+                reasoning_summary="auto",
+            )
+            agent_kwargs["reasoning_model"] = reasoning_model
+        except Exception as _re:
+            import logging
+            logging.getLogger(__name__).warning("推理模型配置失败: %s", _re)
+
     agno_agent = Agent(
         name="平台助手",
         model=OpenAIChat(id=os.environ.get("AGENT_MODEL", "gpt-4o-mini")),
         tools=[DuckDuckGoTools()],
         instructions=["回答使用 Markdown", "需要最新信息时使用搜索工具"],
         markdown=True,
+        **agent_kwargs,
     )
     agent_os = AgentOS(agents=[agno_agent])
     agentos_app = agent_os.get_app()
@@ -425,7 +457,12 @@ except Exception as _e:  # agno 未安装或配置不完整时，主功能不受
 
 @app.get("/api/agentos-status")
 async def agentos_status():
-    return {"agentos": AGENTOS_AVAILABLE}
+    return {
+        "agentos": AGENTOS_AVAILABLE,
+        "reasoning": bool(AGENT_REASONING and AGENT_REASONING_MODEL),
+        "reasoning_model": AGENT_REASONING_MODEL or None,
+        "reasoning_effort": AGENT_REASONING_EFFORT if (AGENT_REASONING and AGENT_REASONING_MODEL) else None,
+    }
 
 
 # ---------------- 静态前端 ----------------
