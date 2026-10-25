@@ -42,10 +42,9 @@ def normalize_endpoint(api_base: str, action: str = "chat/completions"):
     api_base = api_base.strip().rstrip("/")
     parts = urlsplit(api_base)
     path = parts.path or ""
-    if path.endswith("/chat/completions"):
-        path = path[: -len("/chat/completions")]
-    if path.endswith("/models"):
-        path = path[: -len("/models")]
+    for suffix in ("/chat/completions", "/images/generations", "/models"):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
     url = urlunsplit((parts.scheme, parts.netloc, path.rstrip("/") + "/" + action, parts.query, ""))
     return url
 
@@ -199,6 +198,70 @@ async def search_debug(request: Request):
         return JSONResponse({"ok": True, "result": res})
     except Exception as e:
         return JSONResponse({"ok": False, "error": repr(e)[:300]})
+
+
+# ---------------- AI 生图（OpenAI images 协议） ----------------
+@app.post("/api/generate-image")
+async def generate_image(request: Request):
+    """调用生图模型（OpenAI /images/generations 协议）生成图片。
+
+    前端配置的 apiBase/apiKey 直接复用；model 用设置里的「生图模型」（如 dall-e-3 / gpt-image-1）。
+    返回的图片统一转成 base64 dataURL，保证消息持久保存、不依赖外部链接。
+    """
+    body = await request.json()
+    prompt = (body.get("prompt") or "").strip()
+    api_base = (body.get("apiBase") or "https://api.openai.com/v1").rstrip("/")
+    api_key = body.get("apiKey") or ""
+    model = body.get("model") or "dall-e-3"
+    size = body.get("size") or "1024x1024"
+    try:
+        n = max(1, min(2, int(body.get("n") or 1)))
+    except Exception:
+        n = 1
+    if not prompt:
+        return JSONResponse({"ok": False, "error": "提示词为空"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    payload = {"model": model, "prompt": prompt[:4000], "n": n, "size": size}
+    try:
+        import base64 as _b64
+        async with httpx.AsyncClient(timeout=150, follow_redirects=True) as client:
+            r = await client.post(normalize_endpoint(api_base, "images/generations"),
+                                  json=payload, headers=headers)
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False,
+                                     "error": f"HTTP {r.status_code}: {r.text[:300]}"})
+            data = r.json() or {}
+            items = data.get("data") or []
+            images = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("b64_json"):
+                    images.append("data:image/png;base64," + it["b64_json"])
+                elif it.get("url"):
+                    # URL 形式：服务端下载后转 base64，前端消息里持久保存
+                    try:
+                        ir = await client.get(it["url"])
+                        if ir.status_code == 200 and ir.content:
+                            ct = (ir.headers.get("content-type") or "image/png").split(";")[0].strip()
+                            if not ct.startswith("image/"):
+                                ct = "image/png"
+                            images.append(f"data:{ct};base64," + _b64.b64encode(ir.content).decode())
+                        else:
+                            images.append(it["url"])
+                    except Exception:
+                        images.append(it["url"])
+            if not images:
+                return JSONResponse({"ok": False, "error": "服务端未返回图片（data 为空）"})
+            revised = ""
+            if isinstance(items[0], dict):
+                revised = items[0].get("revised_prompt") or ""
+            return JSONResponse({"ok": True, "images": images, "revised_prompt": revised,
+                                 "count": len(images)})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
 
 
 # ---------------- 插件发现：在 GitHub 搜索相关仓库 ----------------
