@@ -31,6 +31,41 @@ UA = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
+# ---------------- 成人内容屏蔽（开关开启时生效） ----------------
+# 常见成人站域名黑名单；命中则整条结果剔除（不依赖关键词，避免误伤两性健康科普）。
+ADULT_DOMAINS = {
+    "pornhub.com", "xhamster.com", "xvideos.com", "youporn.com", "redtube.com",
+    "tiava.com", "lobstertube.com", "spankbang.com", "xnxx.com", "youjizz.com",
+    "tube8.com", "tnaflix.com", "freeones.com", "brazzers.com", "chaturbate.com",
+    "livejasmin.com", "stripchat.com", "cam4.com", "bongacams.com", "myfreecams.com",
+    "xtube.com", "porntube.com", "pornhd.com", "beeg.com", "thumbzilla.com",
+    "empflix.com", "pornrabbit.com", "porntrex.com", "porngo.com", "porn.com",
+    "pornstar.com", "adultfriendfinder.com", "mfc.com", "spankwire.com", "sunporno.com",
+    "pornoxo.com", "xxxbunker.com", "pornpics.com", "efukt.com", "xhamster.desi",
+    "pornhd", "porn", "xxx",
+}
+
+
+def _is_adult(url: str) -> bool:
+    """判断 url 是否属于已知成人站（含其子域）。"""
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower()
+        if not host:
+            host = url.lower()
+        for d in ADULT_DOMAINS:
+            if host == d or host.endswith("." + d):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def filter_adult_results(results: list) -> list:
+    return [r for r in (results or []) if not _is_adult(r.get("url", ""))]
+
 # ---------------- 成人内容过滤（可开关） ----------------
 _ADULT_DOMAINS = (
     "pornhub", "xhamster", "xvideos", "xnxx", "youporn", "redtube", "tiava",
