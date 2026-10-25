@@ -88,6 +88,7 @@ def _decode_bing_url(href: str) -> str:
     """Bing 的结果是 bing.com/ck/a?...&u=a1<base64> 跳转链，需解码出真实地址，
     否则用户点开的是一个 Bing 中转页而不是目标网站。"""
     try:
+        href = unescape(href or "")   # 关键：HTML 里是 &amp;u=a1，必须先还原成 & 才能匹配
         if "bing.com/ck/a" in href or "u=a1" in href:
             m = re.search(r"[?&]u=a1([^&]+)", href)
             if m:
@@ -320,12 +321,14 @@ async def _search_once(client, query: str, engine: str, proxy: str, max_results:
 
     try:
         # ---- 第一波：最快路径并发 ----
+        # 实测：Bing 直连约 130ms 且稳定出结果，放第一波保证秒回；
+        #       DuckDuckGo 在部分机房（如 Render）会连接超时，给它短超时，别拖慢整体。
         wave1 = []
+        wave1.append(search_bing(client, query, timeout=min(FAST_TIMEOUT, _left())))
         if DDGS_AVAILABLE:
             wave1.append(_ddgs_search(query, max_results))
-        wave1.append(search_ddg_api(client, query, timeout=min(FAST_TIMEOUT, _left())))
+        wave1.append(search_ddg_api(client, query, timeout=min(1.5, _left())))
         if pclient is not None:
-            wave1.append(search_ddg_api(pclient, query, timeout=min(FAST_TIMEOUT, _left())))
             wave1.append(search_bing(pclient, query, timeout=min(FAST_TIMEOUT, _left())))
 
         results = await _race(wave1, timeout=min(FAST_TIMEOUT, _left()))
