@@ -987,20 +987,52 @@ async function generate(text, isFreshSend) {
   const sys = (settings.sysPrompt || '').trim();
   if (sys) messages.push({ role: 'system', content: sys });
   if (searchOn) {
-    setStatus('🌐 正在搜索网页…');
-    try {
-      const r = await fetch('/api/search', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: text, engine: settings.searchEngine, proxy: settings.proxy }),
-        signal: controller.signal,
-      });
-      const j = await r.json();
-      sources = j.results || [];
-      searchUsedQuery = j.query_used || '';
-    } catch {}
+    // ① 先让 AI 结合上下文理解意图，生成真正要搜的词（支持指代补全；闲聊会自动判定为不搜）
+    let qs = [];
+    let skipSearch = false;
+    if (settings.apiKey) {
+      try {
+        setStatus('🧠 正在理解你的意图…');
+        var hist = (conv.messages || []).slice(-8).map(function (m) {
+          return { role: (m.role === 'assistant') ? 'assistant' : 'user', content: m.content };
+        });
+        var got = await Promise.race([
+          buildSearchQueries(hist.concat([{ role: 'user', content: text }])),
+          new Promise(function (res) { setTimeout(function () { res([]); }, 8000); }),
+        ]);
+        for (var gi = 0; gi < (got || []).length; gi++) {
+          if (/^none$/i.test(got[gi])) { skipSearch = true; break; }
+          qs.push(got[gi]);
+        }
+      } catch (e) { qs = []; }
+    }
+    if (!qs.length && !skipSearch) qs = [text];   // 兜底：AI 没给出就用原句（后端还会做规则清洗）
+    // ② 用生成的搜索词并发搜索（最多 2 个词），结果合并去重
+    if (!skipSearch) {
+      try {
+        setStatus('🌐 正在搜索：「' + qs.slice(0, 2).join('、') + '」…');
+        var rs = await Promise.all(qs.slice(0, 2).map(function (q) {
+          return fetch('/api/search', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q, engine: settings.searchEngine, proxy: settings.proxy }),
+            signal: controller.signal,
+          }).then(function (r) { return r.json(); }).catch(function () { return { results: [] }; });
+        }));
+        var seen = {};
+        for (var ri = 0; ri < rs.length; ri++) {
+          var list = (rs[ri] && rs[ri].results) || [];
+          for (var si = 0; si < list.length; si++) {
+            if (!seen[list[si].url]) { seen[list[si].url] = 1; sources.push(list[si]); }
+          }
+        }
+        sources = sources.slice(0, 8);
+        searchUsedQuery = qs.slice(0, 2).join('、');
+      } catch (e) {}
+    }
     if (sources.length) {
       messages.push({ role: 'system', content: '以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n' +
-        sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') + '\n（本次搜索关键词：' + (searchUsedQuery || '原句') + '）' });
+        sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') +
+        '\n（本次搜索关键词：' + (searchUsedQuery || '原句') + '，由你结合对话上下文生成）' });
     }
     setStatus('');
   }
@@ -1091,6 +1123,55 @@ async function generate(text, isFreshSend) {
   $('#sendBtn').style.display = ''; $('#stopBtn').style.display = 'none';
   setStatus('');
 }
+// ============ 让 AI 结合上下文生成搜索词（联网搜索前的一步）============
+async function callChatOnce(msgs, temp) {
+  const body = {
+    apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
+    temperature: (temp === undefined ? 0.2 : temp), messages: msgs, search: false,
+  };
+  const resp = await fetch('/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: controller.signal,
+  });
+  if (!resp.ok) return '';
+  const reader = resp.body.getReader(); const dec = new TextDecoder();
+  let buf = '', acc = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done || stopFlag) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split('\n\n'); buf = parts.pop();
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const j = JSON.parse(data);
+        const dl = (j.choices && j.choices[0] && j.choices[0].delta) || {};
+        if (dl.content) acc += dl.content;
+      } catch (e) {}
+    }
+  }
+  return acc.trim();
+}
+
+async function buildSearchQueries(histMsgs) {
+  const sys = '你是一个「搜索查询生成器」。请结合上面的对话上下文，把用户最后一句话转换成真正拿去搜索引擎查询的词。\n' +
+    '必须遵守：\n' +
+    '1) 只输出查询词本身，不要解释、不要引号、不要序号、不要任何多余文字。\n' +
+    '2) 最多 2 个查询词，多个用英文逗号分隔。\n' +
+    '3) 关键：结合上下文把指代补全。例如上文在聊「iPhone 16」，用户问「它多少钱」，你要输出「iPhone 16 价格」；上下文说「特斯拉」，用户问「那家公司的创始人是谁」，输出「特斯拉 创始人」。\n' +
+    '4) 查询词要简洁（一般 2-8 个词），去掉「帮我查」「请问」这类指令词。\n' +
+    '5) 如果用户这句话不需要联网查资料（闲聊、写作、翻译、计算、角色扮演、代码解释等），只输出一个词：NONE';
+  const msgs = [{ role: 'system', content: sys }].concat(histMsgs);
+  const txt = await callChatOnce(msgs, 0.2);
+  if (!txt) return [];
+  return txt.split(/[,，\n;；]+/).map(function (s) {
+    return s.trim().replace(/^[\s"'“”「」『』【】《》\-—*]+|[\s"'“”「」『』【】《》\-—*]+$/g, '');
+  }).filter(function (s) { return s && s.length >= 2 && s.length <= 80; }).slice(0, 2);
+}
+
 window.send = send;
 
 /* ================= 设置 ================= */
