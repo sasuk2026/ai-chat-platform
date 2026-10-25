@@ -1035,7 +1035,12 @@ async function generate(text, isFreshSend) {
         }
       } catch (e) { qs = []; }
     }
-    if (!qs.length && !skipSearch) qs = [text];   // 兜底：AI 没给出就用原句（后端还会做规则清洗）
+    if (!skipSearch) {
+      // 完整搜索：AI 有时会把原句砍成两三字，这里保证用户「完整原句」一定参与搜索
+      const fullQ = text.trim();
+      if (!qs.length) qs = [fullQ];
+      else if (fullQ && fullQ.length > qs[0].length) qs.unshift(fullQ);
+    }
     // ② 用生成的搜索词并发搜索（最多 2 个词），结果合并去重
     if (!skipSearch) {
       try {
@@ -1191,14 +1196,15 @@ async function buildSearchQueries(histMsgs) {
     '1) 只输出查询词本身，不要解释、不要引号、不要序号、不要任何多余文字。\n' +
     '2) 最多 2 个查询词，多个用英文逗号分隔。\n' +
     '3) 关键：结合上下文把指代补全。例如上文在聊「iPhone 16」，用户问「它多少钱」，你要输出「iPhone 16 价格」；上下文说「特斯拉」，用户问「那家公司的创始人是谁」，输出「特斯拉 创始人」。\n' +
-    '4) 查询词要简洁（一般 2-8 个词），去掉「帮我查」「请问」这类指令词。\n' +
-    '5) 如果用户这句话不需要联网查资料（闲聊、写作、翻译、计算、角色扮演、代码解释等），只输出一个词：NONE';
+    '4) 查询词要「完整、具体、可直接搜索」：必须保留核心名词和关键限定词（如"做法/图解/教程/价格/原因"），禁止只提取两三个字的空泛短词（如"体位""好爱"这类碎片）。\n' +
+    '5) 若用户原句本身已是清晰的名词短语或问句，直接输出原句（可略去「帮我查/请问」等指令词），不要精简成碎片；拿不准时宁可保留完整原句也不要砍短。\n' +
+    '6) 如果用户这句话不需要联网查资料（闲聊、写作、翻译、计算、角色扮演、代码解释等），只输出一个词：NONE';
   const msgs = [{ role: 'system', content: sys }].concat(histMsgs);
   const txt = await callChatOnce(msgs, 0.2);
   if (!txt) return [];
   return txt.split(/[,，\n;；]+/).map(function (s) {
     return s.trim().replace(/^[\s"'“”「」『』【】《》\-—*]+|[\s"'“”「」『』【】《》\-—*]+$/g, '');
-  }).filter(function (s) { return s && s.length >= 2 && s.length <= 80; }).slice(0, 2);
+  }).filter(function (s) { return s && s.length >= 4 && s.length <= 60; }).slice(0, 2);
 }
 
 window.send = send;
