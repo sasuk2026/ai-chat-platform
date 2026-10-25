@@ -151,6 +151,17 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
   <div class="card">
     <h3>🔌 插件（个性化设定，可多选叠加）</h3>
     <div id="plugList"></div>
+    <div id="plugEditBox" style="display:none;border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:14px;background:#fafbff;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">✏️ 查看 / 编辑插件完整内容</div>
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px;">插件名称</label>
+      <input id="pe-name" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px;box-sizing:border-box;font-family:inherit;outline:none;" placeholder="插件名称">
+      <label style="display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;">插件正文（可直接修改，改完点保存）</label>
+      <textarea id="pe-content" rows="10" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px;box-sizing:border-box;font-family:inherit;line-height:1.5;outline:none;" placeholder="插件正文"></textarea>
+      <div style="display:flex;gap:10px;margin-top:12px;">
+        <button class="btn primary" id="pe-save">💾 保存修改</button>
+        <button class="btn" id="pe-cancel">取消</button>
+      </div>
+    </div>
     <div class="plug-add">
       <label>插件名称</label>
       <input id="p-name" placeholder="例如：猫娘人设 / 古文翻译官">
@@ -239,12 +250,33 @@ function renderPlugins() {
     const info = document.createElement('div');
     info.className = 'plug-info';
     info.innerHTML = '<div class="plug-name">' + esc(p.name) + '</div><div class="plug-desc">' + esc((p.content.slice(0, 60) + (p.content.length > 60 ? '…' : ''))) + '</div>';
+    info.style.cursor = 'pointer';
+    info.title = '点击查看 / 编辑完整内容';
+    info.onclick = function () { openPlugEdit(p.id); };
     const del = document.createElement('span');
     del.className = 'plug-del'; del.textContent = '🗑';
     del.onclick = () => { plugins = plugins.filter(x => x.id !== p.id); savePlugins(); renderPlugins(); renderPlugBadge(); };
     d.appendChild(sw); d.appendChild(info); d.appendChild(del);
     box.appendChild(d);
   });
+}
+let editingPlugId = null;
+function openPlugEdit(id) {
+  const p = plugins.find(function (x) { return x.id === id; });
+  if (!p) return;
+  editingPlugId = id;
+  $('#pe-name').value = p.name || '';
+  $('#pe-content').value = p.content || '';
+  $('#plugEditBox').style.display = 'block';
+}
+function closePlugEdit() { editingPlugId = null; $('#plugEditBox').style.display = 'none'; }
+function savePlugEdit() {
+  const p = plugins.find(function (x) { return x.id === editingPlugId; });
+  if (!p) { closePlugEdit(); return; }
+  const nm = $('#pe-name').value.trim();
+  if (!nm) { alert('插件名称不能为空'); return; }
+  p.name = nm; p.content = $('#pe-content').value;
+  savePlugins(); renderPlugins(); renderPlugBadge(); closePlugEdit();
 }
 function renderPlugBadge() {
   const n = activePlugins().length;
@@ -1021,7 +1053,13 @@ async function generate(text, isFreshSend) {
         const results = acts.actions.map(applyPluginAction);
         finalText = acts.cleaned;
         messages.push({ role: 'assistant', content: r.content || '' });
-        messages.push({ role: 'user', content: '【系统回执】插件指令执行结果：\n' + results.join('\n') + '\n请基于以上结果继续：若已全部完成，用一句话向用户确认；若还需要动作，继续输出指令块。' });
+        var snap = '';
+        if (plugins.length) {
+          snap = '\n\n【改动后的插件现状】（这是最新的真实内容，你可以据此向用户展示、复述或继续修改）\n' + plugins.map(function (p) {
+            return '名称：' + p.name + '（' + (p.enabled ? '启用中' : '停用中') + '）\n正文：\n' + (p.content || '').slice(0, 5000);
+          }).join('\n\n');
+        }
+        messages.push({ role: 'user', content: '【系统回执】插件指令执行结果：\n' + results.join('\n') + '\n请基于以上结果继续：若已全部完成，用一句话向用户确认；若还需要动作，继续输出指令块。' + snap });
         const bubble = el.querySelector('.bubble');
         if (bubble) bubble.innerHTML = renderMD(finalText + '\n\n⚙️ 正在执行插件指令…');
         toolIter++;
@@ -1108,6 +1146,8 @@ $('#cfgBtn').onclick = () => openSettings();
 $('#saveBtn').onclick = saveSettings;
 $('#testBtn').onclick = testConn;
 $('#plugBtn').onclick = openPlugins;
+$('#pe-save').onclick = savePlugEdit;
+$('#pe-cancel').onclick = closePlugEdit;
 $('#disc-ai').onclick = discAI;
 $('#disc-search').onclick = discSearch;
 $('#p-close').onclick = () => $('#pluginModal').classList.remove('open');
