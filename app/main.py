@@ -157,6 +157,391 @@ async def fetch_url(request: Request):
         return JSONResponse({"ok": False, "error": str(e)[:300]})
 
 
+# ---------------- GitHub 仓库读写（用户自带令牌） ----------------
+GH_API = "https://api.github.com"
+RENDER_API = "https://api.render.com/v1"
+
+
+def _gh_headers(token: str) -> dict:
+    h = {"Accept": "application/vnd.github+json", "User-Agent": "ai-chat-platform"}
+    if token:
+        h["Authorization"] = "Bearer " + token.strip()
+    return h
+
+
+def _rh_headers(key: str) -> dict:
+    return {"Accept": "application/json", "User-Agent": "ai-chat-platform",
+            "Authorization": "Bearer " + key.strip()}
+
+
+@app.post("/api/gh/repos")
+async def gh_repos(request: Request):
+    """列出用户旗下的 GitHub 仓库（最近更新的在前）。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    if not token:
+        return JSONResponse({"ok": False, "error": "未提供 GitHub 令牌（请在设置里填写）"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.get(GH_API + "/user/repos",
+                                 params={"per_page": 100, "sort": "updated", "affiliation": "owner"},
+                                 headers=_gh_headers(token))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            items = r.json() or []
+            repos = [{
+                "name": it.get("full_name"),
+                "private": bool(it.get("private")),
+                "desc": (it.get("description") or "")[:120],
+                "branch": it.get("default_branch") or "main",
+                "url": it.get("html_url"),
+                "updated": it.get("updated_at"),
+            } for it in items]
+            return JSONResponse({"ok": True, "count": len(repos), "repos": repos})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/gh/create-repo")
+async def gh_create_repo(request: Request):
+    """创建 GitHub 仓库（自动初始化 README，默认分支 main）。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    name = (body.get("name") or "").strip()
+    if not token:
+        return JSONResponse({"ok": False, "error": "未提供 GitHub 令牌"})
+    if not name:
+        return JSONResponse({"ok": False, "error": "仓库名不能为空"})
+    payload = {
+        "name": name,
+        "private": bool(body.get("private")),
+        "auto_init": True,
+        "description": (body.get("description") or "由 AI 聊天平台自动创建")[:200],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.post(GH_API + "/user/repos", json=payload, headers=_gh_headers(token))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            it = r.json()
+            return JSONResponse({"ok": True, "repo": it.get("full_name"),
+                                 "branch": it.get("default_branch") or "main",
+                                 "url": it.get("html_url"), "private": bool(it.get("private"))})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/gh/tree")
+async def gh_tree(request: Request):
+    """列出仓库文件树（递归，最多 300 个文件）。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    repo = (body.get("repo") or "").strip()
+    branch = (body.get("branch") or "main").strip() or "main"
+    if not repo or "/" not in repo:
+        return JSONResponse({"ok": False, "error": "repo 需为 owner/name 格式"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.get(f"{GH_API}/repos/{repo}/git/trees/{branch}",
+                                 params={"recursive": 1}, headers=_gh_headers(token))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            data = r.json() or {}
+            files = [t.get("path") for t in (data.get("tree") or []) if t.get("type") == "blob"]
+            dirs = [t.get("path") for t in (data.get("tree") or []) if t.get("type") == "tree" and t.get("path")]
+            return JSONResponse({"ok": True, "repo": repo, "branch": branch,
+                                 "truncated": bool(data.get("truncated")),
+                                 "files": files[:300], "dirs": dirs[:60]})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/gh/read")
+async def gh_read(request: Request):
+    """读取仓库中的文件内容（最多返回 8000 字符）。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    repo = (body.get("repo") or "").strip()
+    path = (body.get("path") or "").strip().lstrip("/")
+    branch = (body.get("branch") or "main").strip() or "main"
+    if not repo or "/" not in repo or not path:
+        return JSONResponse({"ok": False, "error": "需要 repo(owner/name) 和 path"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.get(f"{GH_API}/repos/{repo}/contents/{path}",
+                                 params={"ref": branch}, headers=_gh_headers(token))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            data = r.json() or {}
+            import base64 as _b64
+            raw = (data.get("content") or "").replace("\n", "")
+            try:
+                text = _b64.b64decode(raw).decode("utf-8", errors="replace")
+            except Exception:
+                text = ""
+            size = data.get("size") or len(text)
+            return JSONResponse({"ok": True, "repo": repo, "path": path, "size": size,
+                                 "sha": data.get("sha"),
+                                 "content": text[:8000], "truncated": size > 8000})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/gh/write")
+async def gh_write(request: Request):
+    """写入（创建或更新）仓库文件；content 为完整文件内容（自动 base64）。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    repo = (body.get("repo") or "").strip()
+    path = (body.get("path") or "").strip().lstrip("/")
+    branch = (body.get("branch") or "main").strip() or "main"
+    content = body.get("content")
+    if not token:
+        return JSONResponse({"ok": False, "error": "未提供 GitHub 令牌"})
+    if not repo or "/" not in repo or not path:
+        return JSONResponse({"ok": False, "error": "需要 repo(owner/name) 和 path"})
+    if content is None:
+        return JSONResponse({"ok": False, "error": "content 不能为空"})
+    import base64 as _b64
+    b64 = _b64.b64encode(str(content).encode("utf-8")).decode()
+
+    async def _put(sha=None):
+        payload = {"message": body.get("message") or f"chore: 更新 {path}（AI 聊天平台）",
+                   "content": b64, "branch": branch}
+        if sha:
+            payload["sha"] = sha
+        return await client.put(f"{GH_API}/repos/{repo}/contents/{path}", json=payload,
+                                headers=_gh_headers(token))
+
+    try:
+        async with httpx.AsyncClient(timeout=40) as client:
+            r = await _put(body.get("sha"))
+            # 409 = 文件已存在但没有带 sha：取当前 sha 后重试
+            if r.status_code == 409 and not body.get("sha"):
+                cur = await client.get(f"{GH_API}/repos/{repo}/contents/{path}",
+                                       params={"ref": branch}, headers=_gh_headers(token))
+                if cur.status_code == 200:
+                    r = await _put((cur.json() or {}).get("sha"))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            data = r.json() or {}
+            commit = (data.get("commit") or {})
+            return JSONResponse({"ok": True, "repo": repo, "path": path,
+                                 "bytes": len(str(content).encode("utf-8")),
+                                 "sha": data.get("content", {}).get("sha") if isinstance(data.get("content"), dict) else None,
+                                 "commit": (commit.get("sha") or "")[:10],
+                                 "commit_url": commit.get("html_url")})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/gh/delete")
+async def gh_delete(request: Request):
+    """删除仓库中的文件。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    repo = (body.get("repo") or "").strip()
+    path = (body.get("path") or "").strip().lstrip("/")
+    branch = (body.get("branch") or "main").strip() or "main"
+    if not token or not repo or "/" not in repo or not path:
+        return JSONResponse({"ok": False, "error": "需要 token、repo(owner/name) 和 path"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            cur = await client.get(f"{GH_API}/repos/{repo}/contents/{path}",
+                                   params={"ref": branch}, headers=_gh_headers(token))
+            if cur.status_code != 200:
+                return JSONResponse({"ok": False, "error": f"文件不存在或读取失败（HTTP {cur.status_code}）"})
+            sha = (cur.json() or {}).get("sha")
+            r = await client.request("DELETE", f"{GH_API}/repos/{repo}/contents/{path}",
+                                     json={"message": f"chore: 删除 {path}（AI 聊天平台）", "sha": sha, "branch": branch},
+                                     headers=_gh_headers(token))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            return JSONResponse({"ok": True, "repo": repo, "path": path, "deleted": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+# ---------------- Render 发布（用户自带密钥） ----------------
+@app.post("/api/render/owners")
+async def render_owners(request: Request):
+    """列出 Render workspace（ownerId 建站必填）。"""
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "未提供 Render API Key（请在设置里填写）"})
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(RENDER_API + "/owners", headers=_rh_headers(key))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"Render HTTP {r.status_code}: {r.text[:200]}"})
+            items = r.json() or []
+            owners = [{"id": (it.get("owner") or it).get("id"),
+                       "name": (it.get("owner") or it).get("name"),
+                       "email": (it.get("owner") or it).get("email"),
+                       "type": (it.get("owner") or it).get("type")} for it in items]
+            return JSONResponse({"ok": True, "owners": owners})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/render/services")
+async def render_services(request: Request):
+    """列出 Render 上的服务（含线上地址）。"""
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "未提供 Render API Key"})
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(RENDER_API + "/services", params={"limit": 50},
+                                 headers=_rh_headers(key))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"Render HTTP {r.status_code}: {r.text[:200]}"})
+            items = r.json() or []
+            services = []
+            for it in items:
+                # Render /v1/services 返回 [{service:{...}, cursor:...}]，需解包
+                sv = (it.get("service") if isinstance(it, dict) else None) or it
+                services.append({
+                    "id": sv.get("id"),
+                    "name": sv.get("name"),
+                    "type": sv.get("type"),
+                    "repo": sv.get("repo"),
+                    "branch": sv.get("branch"),
+                    "suspended": sv.get("suspended"),
+                    "url": (sv.get("serviceDetails") or {}).get("url"),
+                })
+            return JSONResponse({"ok": True, "count": len(services), "services": services})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/render/create-service")
+async def render_create_service(request: Request):
+    """把 GitHub 仓库发布为 Render 网站（静态站 / Web Service，默认免费计划）。
+
+    type=static → 静态网站（publishPath 默认 "."）
+    type=web    → Web Service（runtime=python/node/...，需 build/start 命令）
+    """
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    repo = (body.get("repo") or "").strip()
+    name = (body.get("name") or "").strip()
+    stype = (body.get("type") or "static").strip().lower()
+    branch = (body.get("branch") or "main").strip() or "main"
+    if not key:
+        return JSONResponse({"ok": False, "error": "未提供 Render API Key"})
+    if not repo or "/" not in repo:
+        return JSONResponse({"ok": False, "error": "repo 需为 owner/name 格式"})
+    if not name:
+        name = repo.split("/")[-1]
+
+    repo_url = repo if repo.startswith("http") else f"https://github.com/{repo}"
+    payload = {
+        "type": "static_site" if stype == "static" else "web_service",
+        "name": name,
+        "repo": repo_url,
+        "branch": branch,
+        "autoDeploy": "no",
+    }
+    if stype == "static":
+        payload["serviceDetails"] = {
+            "buildCommand": body.get("build") or "",
+            "publishPath": body.get("publish") or ".",
+        }
+    else:
+        runtime = (body.get("runtime") or "node").strip()
+        payload["serviceDetails"] = {
+            "runtime": runtime,
+            "plan": "free",
+            "envSpecificDetails": {
+                "buildCommand": body.get("build") or "",
+                "startCommand": body.get("start") or "",
+            },
+            "healthCheckPath": body.get("health") or "/",
+        }
+    env_vars = body.get("envVars")
+    if isinstance(env_vars, list) and env_vars:
+        payload["envVars"] = [{"key": str(e.get("key")), "value": str(e.get("value"))}
+                              for e in env_vars if isinstance(e, dict) and e.get("key")]
+
+    try:
+        async with httpx.AsyncClient(timeout=40) as client:
+            # ownerId 必填：取第一个 workspace
+            ro = await client.get(RENDER_API + "/owners", headers=_rh_headers(key))
+            if ro.status_code == 200:
+                owners = ro.json() or []
+                if owners:
+                    payload["ownerId"] = (owners[0].get("owner") or owners[0]).get("id")
+            if not payload.get("ownerId"):
+                return JSONResponse({"ok": False, "error": "无法获取 Render workspace（ownerId），请检查 API Key"})
+            r = await client.post(RENDER_API + "/services", json=payload, headers=_rh_headers(key))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"Render HTTP {r.status_code}: {r.text[:300]}"})
+            raw = r.json() or {}
+            # POST /v1/services 返回 {service:{...}, deployId}，需解包
+            svc = raw.get("service") if isinstance(raw, dict) else None
+            if not svc:
+                svc = raw
+            sd = svc.get("serviceDetails") or {}
+            return JSONResponse({"ok": True, "id": svc.get("id"), "name": svc.get("name"),
+                                 "type": svc.get("type"), "repo": svc.get("repo"),
+                                 "branch": svc.get("branch"),
+                                 "deploy_id": raw.get("deployId") if isinstance(raw, dict) else None,
+                                 "url": sd.get("url"),
+                                 "dashboard": f"https://dashboard.render.com/web/{svc.get('id')}"})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/render/deploys")
+async def render_deploys(request: Request):
+    """查询某服务的部署历史与状态。"""
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    sid = (body.get("service") or "").strip()
+    if not key or not sid:
+        return JSONResponse({"ok": False, "error": "需要 Render Key 和 service ID"})
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(f"{RENDER_API}/services/{sid}/deploys",
+                                 params={"limit": 5}, headers=_rh_headers(key))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"Render HTTP {r.status_code}: {r.text[:200]}"})
+            items = r.json() or []
+            deploys = []
+            for d in items:
+                dp = (d.get("deploy") if isinstance(d, dict) else None) or d
+                deploys.append({"id": dp.get("id"), "status": dp.get("status"),
+                                "created": dp.get("createdAt"), "finished": dp.get("finishedAt")})
+            latest = deploys[0]["status"] if deploys else None
+            return JSONResponse({"ok": True, "service": sid, "latest_status": latest, "deploys": deploys[:5]})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/render/trigger")
+async def render_trigger(request: Request):
+    """手动触发一次部署（清缓存）。"""
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    sid = (body.get("service") or "").strip()
+    if not key or not sid:
+        return JSONResponse({"ok": False, "error": "需要 Render Key 和 service ID"})
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(f"{RENDER_API}/services/{sid}/deploys",
+                                  json={"clearCache": "clear"}, headers=_rh_headers(key))
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"Render HTTP {r.status_code}: {r.text[:200]}"})
+            d = r.json() or {}
+            dp = (d.get("deploy") if isinstance(d, dict) else None) or d
+            return JSONResponse({"ok": True, "deploy_id": dp.get("id"), "status": dp.get("status")})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
 # ---------------- 配置诊断：用你的 key 调 /models，返回服务商原始响应 ----------------
 @app.post("/api/test-config")
 async def test_config(request: Request):
