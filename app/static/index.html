@@ -112,6 +112,11 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 .to-bottom:hover { background: var(--primary-h); }
 .to-bottom.show { display: inline-flex; }
 .to-bottom:active { transform: scale(.94); }
+img.gen-img { display: block; max-width: 100%; width: 420px; max-height: 420px; border-radius: 10px; margin-top: 10px; border: 1px solid var(--border); cursor: zoom-in; background: #f4f5f9; }
+img.gen-img:hover { filter: brightness(1.02); }
+#imgLightbox { position: fixed; inset: 0; background: rgba(15,17,26,.88); display: none; align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; padding: 24px; }
+#imgLightbox.show { display: flex; }
+#imgLightbox img { max-width: 96vw; max-height: 92vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
 #scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 39; }
 #scrim.show { display: block; }
 /* ===== 插件发现（AI 搜仓库并安装） ===== */
@@ -233,11 +238,27 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
     <input id="s-proxy" placeholder="例如 https://corsproxy.io/?{url}">
     <label>GitHub Token（插件发现用，可选，提高搜索限额）</label>
     <input id="s-gtoken" type="password" placeholder="ghp_...（留空则用匿名，限额较低）">
+    <label class="search-toggle" style="margin:2px 0 8px;"><input type="checkbox" id="s-imgen" checked>🎨 启用 AI 生图技能（对话中说"画/生成图片"即调用生图模型）</label>
+    <div style="display:flex;gap:8px;">
+      <div style="flex:1;">
+        <label>生图模型</label>
+        <input id="s-imgmodel" placeholder="dall-e-3">
+      </div>
+      <div style="flex:1;">
+        <label>默认尺寸</label>
+        <select id="s-imgsize">
+          <option value="1024x1024">1024×1024 方形</option>
+          <option value="1792x1024">1792×1024 横版</option>
+          <option value="1024x1792">1024×1792 竖版</option>
+        </select>
+      </div>
+    </div>
     <div class="hint">
       兼容任何 OpenAI 协议服务：OpenAI / DeepSeek / 通义千问 / Ollama / OpenRouter / 中转站。
       代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
       平台还内置 Agno AgentOS 智能体接口（/agno，由服务端环境变量配置）。
       发送图片需要模型支持视觉（如 gpt-4o-mini / gpt-4o），否则会报错——点 📷 可图文一起发给 AI 识别。
+      生图：对话里说"画一张…""生成…的图片"即可让 AI 调用生图模型（默认 dall-e-3，可在上方改成你服务商支持的模型，如 gpt-image-1 / flux 等）。
     </div>
     <div class="row">
       <button class="btn primary" id="saveBtn">保存</button>
@@ -412,8 +433,19 @@ const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个�
 '【新建插件】用户要一个新插件时，用 action=create，正文由你亲自完整撰写，不要让用户自己写。\n' +
 '【禁止】不要输出任何 shell 命令，不要假装运行程序，不要说"我无法修改"。你完全可以修改——用指令块。';
 
+const IMG_TOOL_SYS = '【生图技能（务必遵守）】你可以调用生图模型为用户绘制图片。当用户想让你画图/生成图片时（如"画一张…""生成…的图""来张壁纸/头像/插画/海报""帮我设计…"等），你必须输出生图指令块，前端会真实调用生图模型并把图片直接展示给用户。\n' +
+'【指令格式（行协议）】prompt 必须单独写在一行，不要换行：\n' +
+'<<<IMG\nprompt=完整的绘画提示词\nsize=1024x1024\nn=1\nIMG>>>\n' +
+'【规则】\n' +
+'1) prompt 必须非常具体：写清主体、动作、环境、风格、色调、光影、构图、镜头。用户描述简单时，你要主动扩充合理的细节，不要只写一两个字。\n' +
+'2) n=1（一次一张）。size 默认 1024x1024；用户要横版/宽图用 1792x1024，竖版/长图用 1024x1792。\n' +
+'3) 输出指令块的同时，用一两句话告诉用户"正在为你绘制…"。生成完成后系统会回执结果，你再根据结果简单描述这幅画。\n' +
+'4) 绝对禁止自己编造图片链接、禁止用 markdown 图片语法 ![](...)——用户看不到，只能靠指令块真实生成。\n' +
+'5) 用户只是在讨论/询问某张已有图片（如"这张图里有什么"），不要输出指令块。';
+
 // 调用 /api/chat 并解析 SSE：实时渲染文本，同时累积 tool_calls
-async function runChatStream(messages, tools, el, box) {
+// state.extra：流式期间要一并渲染的附加 HTML（如已生成的图片），每轮 token 都会重绘
+async function runChatStream(messages, tools, el, box, state) {
   const body = {
     apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
     temperature: settings.temperature, messages: messages, search: false,
@@ -467,6 +499,7 @@ async function runChatStream(messages, tools, el, box) {
           if (think && !acc) html = '<div style="color:#8a90a3;font-style:italic;font-size:12.5px;white-space:pre-wrap;">💭 ' + esc(think.slice(-400)) + '</div>';
           else if (think && acc) html = '<details style="margin-bottom:6px;"><summary style="font-size:12px;color:#8a90a3;cursor:pointer;">💭 已深度思考（点击展开）</summary><div style="color:#8a90a3;font-size:12px;white-space:pre-wrap;border-left:2px solid #d5d9e6;padding-left:8px;margin-top:6px;">' + esc(think.slice(0,2000)) + '</div></details>';
           html += renderMD(acc);
+          if (state && state.extra) html += state.extra;
           bubble.innerHTML = html;
           smartScroll(box);
         }
@@ -531,6 +564,56 @@ function extractPluginActions(text) {
     if (o && o.action) actions.push(o); else bad.push(String(m[1]).slice(0, 150));
   }
   return { actions: actions, bad: bad, cleaned: String(text || '').replace(re, '').trim() };
+}
+
+/* ================= 生图技能：<<<IMG ... IMG>>> 指令协议 ================= */
+function parseImgBlock(raw) {
+  let t = String(raw || '').trim().replace(/^```[a-zA-Z]*\s*/, '').replace(/```$/, '').trim();
+  // 1) 标准 JSON
+  try { const j = JSON.parse(t); if (j && (j.prompt || j.action)) return j; } catch (e) {}
+  // 2) JSON 容错：中文引号、尾随逗号
+  try {
+    const t2 = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/,\s*([}\]])/g, '$1');
+    const j = JSON.parse(t2); if (j && (j.prompt || j.action)) return j;
+  } catch (e) {}
+  // 3) 行协议：prompt= / size= / n=（prompt 单行）
+  const obj = {};
+  t.split('\n').forEach(function (ln) {
+    const m = ln.match(/^\s*(prompt|size|n|style|quality|model)\s*[:=]\s*(.*)$/i);
+    if (m) obj[m[1].toLowerCase()] = m[2].trim().replace(/^["']+|["']+$/g, '');
+  });
+  return obj.prompt ? obj : null;
+}
+function extractImgActions(text) {
+  const re = /<<<\s*IMG\b([\s\S]*?)IMG\s*>>>/gi;
+  const actions = [];
+  const bad = [];
+  let m;
+  const src = String(text || '');
+  while ((m = re.exec(src))) {
+    const o = parseImgBlock(m[1]);
+    if (o && o.prompt) actions.push(o); else bad.push(String(m[1]).slice(0, 150));
+  }
+  return { actions: actions, bad: bad, cleaned: src.replace(re, '').trim() };
+}
+// 执行一条生图指令：调 /api/generate-image，返回 {ok, images[], revised, error}
+async function applyImgAction(a) {
+  let n = parseInt(a.n) || 1;
+  if (n < 1) n = 1; if (n > 2) n = 2;
+  const r = await fetch('/api/generate-image', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: a.prompt,
+      size: (a.size || settings.imageSize || '1024x1024'),
+      n: n,
+      model: a.model || settings.imageModel || 'dall-e-3',
+      apiBase: settings.apiBase, apiKey: settings.apiKey,
+    }),
+    signal: controller.signal,
+  });
+  const j = await r.json().catch(function () { return { ok: false, error: '响应解析失败' }; });
+  if (!j.ok) return { ok: false, error: j.error || '生成失败' };
+  return { ok: true, images: j.images || [], revised: j.revised_prompt || '' };
 }
 
 // 执行一条文本协议插件指令
@@ -820,7 +903,18 @@ const Store = {
   getConv(id) { try { return JSON.parse(localStorage.getItem('aicp_conv_' + id)); } catch { return null; } },
   saveConv(c) {
     c.updatedAt = Date.now();
-    localStorage.setItem('aicp_conv_' + c.id, JSON.stringify(c));
+    try {
+      localStorage.setItem('aicp_conv_' + c.id, JSON.stringify(c));
+    } catch (e) {
+      // 图片 base64 很大，超出 localStorage 配额时退而求其次：去掉图片再存（对话不丢）
+      try {
+        const stripped = Object.assign({}, c, {
+          messages: (c.messages || []).map(m => (m && m.images) ? Object.assign({}, m, { images: undefined }) : m),
+        });
+        stripped.messages.forEach(m => { if (m) delete m.images; });
+        localStorage.setItem('aicp_conv_' + c.id, JSON.stringify(stripped));
+      } catch (e2) {}
+    }
     const list = Store.convs().filter(x => x.id !== c.id);
     list.unshift({ id: c.id, title: c.title, updatedAt: c.updatedAt });
     list.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -948,6 +1042,14 @@ function msgEl(m, idx) {
   }
   else {
     b.innerHTML = renderMD(m.content || '');
+    if (m.images && m.images.length) {
+      m.images.forEach(function (u) {
+        const im = document.createElement('img');
+        im.className = 'gen-img';
+        im.src = u; im.alt = 'AI 生成的图片';
+        b.appendChild(im);
+      });
+    }
     if (m.sources && m.sources.length) {
       const s = document.createElement('div');
       s.className = 'sources';
@@ -1066,6 +1168,8 @@ async function generate(isFreshSend) {
   const searchOn = $('#searchToggle').checked;
   let sources = [];
   let searchUsedQuery = '';
+  let generatedImages = [];          // 本次回复中生成的图片（dataURL）
+  const imgState = { extra: '' };    // 流式重绘时一并渲染已生成图片
   const messages = [];
   // 自定义系统提示词
   const sys = (settings.sysPrompt || '').trim();
@@ -1146,6 +1250,13 @@ async function generate(isFreshSend) {
     }
     messages.push({ role: 'system', content: sysTxt });
   }
+  // 生图技能闸门：用户明确想画图时才注入生图指令协议
+  const imgIntent = settings.imageEnabled !== false &&
+    /(生图|画一|画张|画个|画一下|画幅|绘制|绘图|来张|来一幅|来一张|文生图|text[- ]?to[- ]?image|image generation|generate an? image|draw\b|midjourney|stable diffusion|sd绘画)/i.test(text) ||
+    /(生成|做|设计|来)\s*(一[张幅个])?\s*(图片|照片|插画|海报|壁纸|头像|表情包|封面|logo)/i.test(text);
+  if (settings.apiKey && imgIntent) {
+    messages.push({ role: 'system', content: IMG_TOOL_SYS });
+  }
   conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
 
   const box = $('#msgs');
@@ -1158,7 +1269,7 @@ async function generate(isFreshSend) {
   try {
     let toolIter = 0;
     while (toolIter < 4) {
-      const r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box);
+      const r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box, imgState);
       if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error; break; }
       if (r.content) finalText += r.content;
       // ---- 文本协议兜底：模型不支持 function calling 时也能新建/修改/删除插件 ----
@@ -1187,6 +1298,42 @@ async function generate(isFreshSend) {
         toolIter++;
         continue;
       }
+      // ---- 生图技能：解析 <<<IMG ... IMG>>> 指令块并真实调用生图模型 ----
+      const imgActs = extractImgActions(finalText);
+      if (!imgActs.actions.length && imgActs.bad.length) {
+        finalText = imgActs.cleaned;
+        messages.push({ role: 'assistant', content: r.content || '' });
+        messages.push({ role: 'user', content: '【系统回执⚠️】你的生图指令块没有解析成功，图片没有生成。请严格按行协议重写一遍（prompt 单独一行，不要换行）：\n<<<IMG\nprompt=完整的绘画提示词\nsize=1024x1024\nn=1\nIMG>>>\n你刚才写的是：' + imgActs.bad.join(' | ') });
+        toolIter++;
+        continue;
+      }
+      if (imgActs.actions.length) {
+        finalText = imgActs.cleaned;
+        messages.push({ role: 'assistant', content: r.content || '' });
+        const bubble = el.querySelector('.bubble');
+        if (bubble) bubble.innerHTML = renderMD(finalText + '\n\n🎨 正在绘制…');
+        const genLines = [];
+        for (const ia of imgActs.actions.slice(0, 2)) {
+          setStatus('🎨 正在绘制：「' + String(ia.prompt).slice(0, 30) + '」…');
+          const res = await applyImgAction(ia);
+          if (res.ok && res.images.length) {
+            res.images.forEach(function (u) { generatedImages.push(u); });
+            imgState.extra = generatedImages.map(function (u) {
+              return '<img class="gen-img" src="' + esc(u) + '" alt="AI 生成的图片">';
+            }).join('');
+            const b2 = el.querySelector('.bubble');
+            if (b2) b2.innerHTML = renderMD(finalText) + imgState.extra;
+            genLines.push('✅ 已生成 ' + res.images.length + ' 张图，图片已直接展示给用户（用户能看见）。提示词：' + ia.prompt + (res.revised ? '\n服务商改写后的提示词：' + res.revised : ''));
+          } else {
+            genLines.push('❌ 生成失败：' + (res.error || '未知错误') + '。提示词：' + ia.prompt);
+          }
+        }
+        setStatus('');
+        messages.push({ role: 'user', content: '【系统回执】生图指令执行结果：\n' + genLines.join('\n') +
+          '\n请基于以上结果继续：成功了就向用户简单描述这幅画（不要贴链接）；失败了就说明原因，可修改提示词后再次输出指令块重试。' });
+        toolIter++;
+        continue;
+      }
       if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束  // 模型不再调工具 → 结束
       // 执行工具（搜索 GitHub / 安装 / 查看 / 修改 / 删除插件）
       setStatus('🔌 正在处理插件（查找 / 安装 / 修改）…');
@@ -1202,6 +1349,7 @@ async function generate(isFreshSend) {
   ph.content = finalText || '(已停止)';
   ph.sources = sources;
   ph.qused = searchUsedQuery;
+  if (generatedImages.length) ph.images = generatedImages.slice(0, 4);
   el.remove();
   conv.messages.push(ph);
   box.appendChild(msgEl(ph, conv.messages.length - 1));
@@ -1273,6 +1421,9 @@ function openSettings() {
   $('#s-filter').checked = settings.filterAdult !== false;
   $('#s-proxy').value = settings.proxy || '';
   $('#s-gtoken').value = settings.githubToken || '';
+  $('#s-imgen').checked = settings.imageEnabled !== false;
+  $('#s-imgmodel').value = settings.imageModel || 'dall-e-3';
+  $('#s-imgsize').value = settings.imageSize || '1024x1024';
   $('#s-sys').value = settings.sysPrompt || '';
   $('#settings').classList.add('open');
 }
@@ -1306,6 +1457,9 @@ function saveSettings() {
     filterAdult: $('#s-filter').checked,
     proxy: $('#s-proxy').value.trim(),
     githubToken: $('#s-gtoken').value.trim(),
+    imageEnabled: $('#s-imgen').checked,
+    imageModel: $('#s-imgmodel').value.trim() || 'dall-e-3',
+    imageSize: $('#s-imgsize').value,
     sysPrompt: $('#s-sys').value,
   };
   Store.saveSettings(settings);
@@ -1447,9 +1601,24 @@ $('#imgInput').onchange = function () {
 
 newConv();
 renderPlugBadge();
+// 生成图片灯箱：点击放大，再点关闭
+(function () {
+  const lb = document.getElementById('imgLightbox');
+  if (!lb) return;
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.tagName === 'IMG' && e.target.classList.contains('gen-img')) {
+      lb.querySelector('img').src = e.target.src;
+      lb.classList.add('show');
+    } else if (lb.classList.contains('show')) {
+      lb.classList.remove('show');
+    }
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') lb.classList.remove('show'); });
+})();
 fetch('/api/agentos-status').then(r => r.json()).then(j => {
   if (j.agentos) setStatus('💡 平台已内置 Agno AgentOS 智能体接口（/agno）');
 }).catch(() => {});
 </script>
+<div id="imgLightbox"><img alt="放大预览"></div>
 </body>
 </html>
