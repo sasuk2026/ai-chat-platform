@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .search import web_search
+from .search import web_search, diagnose
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -174,6 +174,19 @@ async def search(request: Request):
     proxy = body.get("proxy") or ""
     results = await web_search(query, engine=engine, proxy=proxy)
     return JSONResponse({"results": results})
+
+
+@app.post("/api/search-debug")
+async def search_debug(request: Request):
+    """搜索体检：逐个测试各搜索源，返回线上真实可用情况。"""
+    body = await request.json()
+    q = (body.get("query") or "test").strip()
+    px = body.get("proxy") or ""
+    try:
+        res = await diagnose(q, px)
+        return JSONResponse({"ok": True, "result": res})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": repr(e)[:300]})
 
 
 # ---------------- 插件发现：在 GitHub 搜索相关仓库 ----------------
