@@ -31,6 +31,31 @@ UA = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
+# ---------------- 成人内容过滤（可开关） ----------------
+_ADULT_DOMAINS = (
+    "pornhub", "xhamster", "xvideos", "xnxx", "youporn", "redtube", "tiava",
+    "lobstertube", "spankbang", "pornone", "eporner", "txxx", "upornia",
+    "hotmovs", "missav", "javdb", "javmost", "javhub", "avgle", "sextb",
+    "91porn", "sex.com", "hentai", "ero-video", "theporndude", "thisvid",
+    "t66y", "caoliu", "sis001", "sexinsex", "1024cl",
+)
+_ADULT_WORDS = ("色情", "成人影片", "成人视频", "免费A片", "做爱视频", "性爱视频", "黄色网站", "裸聊", "18禁")
+
+
+def is_adult(url: str, text: str = "") -> bool:
+    u = (url or "").lower()
+    if any(d in u for d in _ADULT_DOMAINS):
+        return True
+    t = text or ""
+    # 命中 >=2 个敏感词才算（避免"成人教育"这类被误伤）
+    return sum(1 for w in _ADULT_WORDS if w in t) >= 2
+
+
+def filter_adult_results(results: list) -> list:
+    return [r for r in results
+            if not is_adult(r.get("url", ""), (r.get("title", "") or "") + (r.get("snippet", "") or ""))]
+
+
 # ---------------- 可调参数 ----------------
 CACHE_TTL = 300          # 缓存有效期（秒）
 CACHE_MAX = 256          # 缓存最多保留多少条
@@ -45,8 +70,8 @@ _LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10,
 _cache = OrderedDict()
 
 
-def _cache_key(query: str, engine: str, max_results: int) -> tuple:
-    return (query.strip().lower(), engine, max_results)
+def _cache_key(query: str, engine: str, max_results: int, filter_adult: bool = False) -> tuple:
+    return (query.strip().lower(), engine, max_results, bool(filter_adult))
 
 
 def _cache_get(key):
@@ -200,8 +225,8 @@ async def search_ddg_api(client, query, timeout: float = 5.0):
     return results
 
 
-async def search_bing(client, query, timeout: float = 5.0):
-    html = await _fetch(client, "https://www.bing.com/search?q=" + _enc(query) + "&count=10", timeout)
+async def search_bing(client, query, timeout: float = 5.0, safe: bool = False):
+    html = await _fetch(client, "https://www.bing.com/search?q=" + _enc(query) + "&count=10" + ("&adlt=strict" if safe else ""), timeout)
     results = []
     for m in re.finditer(r'<li class="b_algo".*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>(.*?)(?=<li class="b_algo"|</ol>)', html, re.S):
         if len(results) >= 6:
@@ -214,6 +239,25 @@ async def search_bing(client, query, timeout: float = 5.0):
             results.append(item)
     if not results:
         raise ValueError("bing empty")
+    return results
+
+
+async def search_baidu(client, query, timeout: float = 5.0):
+    """百度搜索：中文内容质量最好，国内话题（怎么/如何类）不会被词典页带偏。
+    结果是 baidu.com/link?url= 跳转链，点击可 302 到真实站点，直接可用。"""
+    html = await _fetch(client, "https://www.baidu.com/s?wd=" + _enc(query) + "&rn=10", timeout)
+    results = []
+    for m in re.finditer(r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h3>(.*?)(?=<h3|$)', html, re.S):
+        if len(results) >= 6:
+            break
+        href, title, rest = m.group(1), _clean(m.group(2)), m.group(3)
+        if not title:
+            continue
+        sm = re.search(r'class="[^"]*(?:c-abstract|content-right)[^"]*"[^>]*>(.*?)</(?:span|div|p)>', rest, re.S)
+        snippet = _clean(sm.group(1)) if sm else _clean(re.sub(r"<[^>]+>", " ", rest))[:120]
+        results.append({"title": title, "url": href, "snippet": snippet})
+    if not results:
+        raise ValueError("baidu empty (可能被反爬)")
     return results
 
 
@@ -238,6 +282,7 @@ async def search_google(client, query, timeout: float = 5.0):
 
 
 RUNNERS = {
+    "baidu": [search_baidu, search_bing],
     "duckduckgo": [search_ddg, search_ddg_api],
     "bing": [search_bing, search_ddg_api],
     "google": [search_google, search_bing, search_ddg_api],
@@ -301,7 +346,8 @@ def _make_proxy_client(proxy: str, timeout: float):
     return None
 
 
-async def _search_once(client, query: str, engine: str, proxy: str, max_results: int) -> list:
+async def _search_once(client, query: str, engine: str, proxy: str, max_results: int,
+                       filter_adult: bool = False) -> list:
     """执行一次真实搜索：分级超时，快源优先，慢源兜底。
 
     重要修正：
@@ -324,7 +370,8 @@ async def _search_once(client, query: str, engine: str, proxy: str, max_results:
         # 实测：Bing 直连约 130ms 且稳定出结果，放第一波保证秒回；
         #       DuckDuckGo 在部分机房（如 Render）会连接超时，给它短超时，别拖慢整体。
         wave1 = []
-        wave1.append(search_bing(client, query, timeout=min(FAST_TIMEOUT, _left())))
+        wave1.append(search_bing(client, query, timeout=min(FAST_TIMEOUT, _left()), safe=filter_adult))
+        wave1.append(search_baidu(client, query, timeout=min(FAST_TIMEOUT, _left())))
         if DDGS_AVAILABLE:
             wave1.append(_ddgs_search(query, max_results))
         wave1.append(search_ddg_api(client, query, timeout=min(1.5, _left())))
@@ -332,6 +379,8 @@ async def _search_once(client, query: str, engine: str, proxy: str, max_results:
             wave1.append(search_bing(pclient, query, timeout=min(FAST_TIMEOUT, _left())))
 
         results = await _race(wave1, timeout=min(FAST_TIMEOUT, _left()))
+        if filter_adult and results:
+            results = filter_adult_results(results)
         if results:
             return results
 
@@ -358,7 +407,10 @@ async def _search_once(client, query: str, engine: str, proxy: str, max_results:
         if pclient is not None:
             wave2.append(search_bing(pclient, query, timeout=min(4.0, _left())))
 
-        return await _race(wave2, timeout=_left())
+        results = await _race(wave2, timeout=_left())
+        if filter_adult and results:
+            results = filter_adult_results(results)
+        return results
     finally:
         if pclient is not None:
             try:
@@ -413,7 +465,8 @@ _FILLER = (
     "搜索一下","搜索下","搜一下","搜搜","搜下","搜索",
     "请问一下","请问","我想知道","我想了解一下","我想了解","我想查一下","我想查查",
     "告诉我一下","告诉我","在网上查","上网查","网上查","在线查","百度一下","谷歌一下",
-    "什么是","什么叫","现在","立刻","马上","赶紧","快去",
+    "什么是","什么叫","怎么","怎么样","怎么才能","怎么可以","如何","为什么","为啥",
+    "现在","立刻","马上","赶紧","快去",
 )
 
 
@@ -434,25 +487,32 @@ def clean_query(q: str) -> str:
                 changed = True
                 break
     s = re.sub(r"[？?！!。，,．.\s]+$", "", s)
+    # 顿号/分号连接的多主题（如"怎么爱爱更舒服、性爱舒适度提升技巧"）：
+    # 整串丢给引擎会被分词带偏到"怎么/如何"词典页，只取第一个主题
+    parts = re.split(r"[、；;]", s)
+    if len(parts) > 1 and len(parts[0].strip()) >= 4:
+        s = parts[0].strip()
     while s and s[-1] in "的了呢吗啊吧嘛呀":
         s = s[:-1].rstrip("，。,. ")
     return s.strip()
 
 
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
-                     max_results: int = 6, timeout: float = TOTAL_TIMEOUT) -> list:
+                     max_results: int = 6, timeout: float = TOTAL_TIMEOUT,
+                     filter_adult: bool = True) -> list:
     """多源并发搜索，取首个非空结果；带缓存 + 并发去重 + 分级超时。
 
     - 首选 ddgs（直连 DuckDuckGo 接口，秒回、稳定）。
     - 短超时内无结果才启用 HTML 爬虫兜底（Bing / Google）。
     - 相同 query 的并发请求共享一次真实搜索，重复查询直接读缓存。
+    - filter_adult=True 时屏蔽色情站点结果（并对 Bing 开启严格安全搜索）。
     """
     raw_query = (query or "").strip()
     if not raw_query:
         return []
     query = clean_query(raw_query) or raw_query   # 关键：用提炼后的关键词去搜
 
-    key = _cache_key(query, engine, max_results)
+    key = _cache_key(query, engine, max_results, filter_adult)
     hit = _cache_get(key)
     if hit is not None:
         return list(hit)
@@ -472,7 +532,8 @@ async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
     try:
         async with httpx.AsyncClient(headers=UA, follow_redirects=True,
                                      timeout=timeout, limits=_LIMITS) as client:
-            results = (await _search_once(client, query, engine, proxy, max_results))[:max_results]
+            results = (await _search_once(client, query, engine, proxy, max_results,
+                                          filter_adult=filter_adult))[:max_results]
     except Exception:
         results = []
 
