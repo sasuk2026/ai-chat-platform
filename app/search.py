@@ -569,6 +569,13 @@ async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
                                      timeout=timeout, limits=_LIMITS) as client:
             results = (await _search_once(client, query, engine, proxy, max_results,
                                           filter_adult=filter_adult))[:max_results]
+            # 优雅降级：开启过滤后若结果为空（说明返回几乎全是成人内容被全剔除），
+            # 改用宽松搜索（不加 Bing 严格模式），再用域名黑名单精准剔除成人站，
+            # 尽量保留维基/百科/健康科普类结果，避免「开了过滤反而搜不出」。
+            if filter_adult and not results:
+                raw = (await _search_once(client, query, engine, proxy, max_results,
+                                          filter_adult=False))[:max_results]
+                results = filter_adult_results(raw)
     except Exception:
         results = []
 
