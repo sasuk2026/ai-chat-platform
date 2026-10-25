@@ -22,6 +22,15 @@ from .search import web_search, diagnose, clean_query
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+
+def _msg_text(content) -> str:
+    """从用户消息里抽取纯文本：兼容纯字符串与多模态数组（图文混合）。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+    return ""
+
 app = FastAPI(title="AI Chat Platform", docs_url="/docs")
 
 def normalize_endpoint(api_base: str, action: str = "chat/completions"):
@@ -54,13 +63,14 @@ async def chat(request: Request):
     tools = body.get("tools")
     tool_choice = body.get("tool_choice")
 
-    # 联网搜索：取最后一条用户消息作为查询
+    # 联网搜索：取最后一条用户消息作为查询（兼容图文混合消息）
     searches = []
     if search_enabled and messages:
         last_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
-        if last_user:
+        last_user_text = _msg_text(last_user)
+        if last_user_text:
             searches = await web_search(
-                last_user,
+                last_user_text,
                 engine=body.get("searchEngine") or "duckduckgo",
                 proxy=body.get("proxy") or "",
             )
