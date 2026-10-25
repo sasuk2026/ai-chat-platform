@@ -213,10 +213,12 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
     <textarea id="s-sys" placeholder="例如：你是一个专业的安全审计助手…"></textarea>
     <label>搜索引擎</label>
     <select id="s-engine">
+      <option value="baidu">百度 Baidu（中文最佳）</option>
       <option value="duckduckgo">DuckDuckGo</option>
       <option value="bing">微软 Bing</option>
       <option value="google">谷歌 Google</option>
     </select>
+    <label class="search-toggle" style="margin:2px 0 8px;"><input type="checkbox" id="s-filter" checked>🛡️ 过滤成人内容（屏蔽色情站点 + 安全搜索）</label>
     <label>网络代理（访问 Google 等，可选）</label>
     <input id="s-proxy" placeholder="例如 https://corsproxy.io/?{url}">
     <label>GitHub Token（插件发现用，可选，提高搜索限额）</label>
@@ -1041,7 +1043,7 @@ async function generate(text, isFreshSend) {
         var rs = await Promise.all(qs.slice(0, 2).map(function (q) {
           return fetch('/api/search', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q, engine: settings.searchEngine, proxy: settings.proxy }),
+            body: JSON.stringify({ query: q, engine: settings.searchEngine, proxy: settings.proxy, filter_adult: settings.filterAdult !== false }),
             signal: controller.signal,
           }).then(function (r) { return r.json(); }).catch(function () { return { results: [] }; });
         }));
@@ -1207,7 +1209,8 @@ function openSettings() {
   $('#s-key').value = settings.apiKey || '';
   $('#s-model').value = settings.model || '';
   $('#s-temp').value = settings.temperature;
-  $('#s-engine').value = settings.searchEngine || 'duckduckgo';
+  $('#s-engine').value = settings.searchEngine || 'baidu';
+  $('#s-filter').checked = settings.filterAdult !== false;
   $('#s-proxy').value = settings.proxy || '';
   $('#s-gtoken').value = settings.githubToken || '';
   $('#s-sys').value = settings.sysPrompt || '';
@@ -1240,6 +1243,7 @@ function saveSettings() {
     model: $('#s-model').value.trim() || 'gpt-4o-mini',
     temperature: parseFloat($('#s-temp').value) || 0.7,
     searchEngine: $('#s-engine').value,
+    filterAdult: $('#s-filter').checked,
     proxy: $('#s-proxy').value.trim(),
     githubToken: $('#s-gtoken').value.trim(),
     sysPrompt: $('#s-sys').value,
