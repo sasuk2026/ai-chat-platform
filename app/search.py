@@ -195,7 +195,7 @@ def _ddgs_new():
     return DDGS()
 
 
-async def _ddgs_search(query: str, max_results: int = 6) -> list:
+async def _ddgs_search(query: str, max_results: int = 15) -> list:
     """用 ddgs 库直连 DuckDuckGo；放线程里避免阻塞事件循环，并复用实例减少握手开销。"""
     global _ddgs_obj
 
@@ -228,7 +228,7 @@ async def search_ddg(client, query, timeout: float = 5.0):
     html = await _fetch(client, "https://html.duckduckgo.com/html/?q=" + _enc(query), timeout)
     results = []
     for m in re.finditer(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]*class="[^"]*result__a|$)', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         href, title = m.group(1), _clean(m.group(2))
         if href.startswith("//"):
@@ -252,7 +252,7 @@ async def search_ddg_api(client, query, timeout: float = 5.0):
     results = []
     if j.get("AbstractText"):
         results.append({"title": j.get("Heading") or query, "url": j.get("AbstractURL", ""), "snippet": j["AbstractText"]})
-    for t in (j.get("RelatedTopics") or [])[:5]:
+    for t in (j.get("RelatedTopics") or [])[:15]:
         if t.get("Text"):
             results.append({"title": t["Text"][:60], "url": t.get("FirstURL", ""), "snippet": t["Text"]})
     if not results:
@@ -261,10 +261,10 @@ async def search_ddg_api(client, query, timeout: float = 5.0):
 
 
 async def search_bing(client, query, timeout: float = 5.0, safe: bool = False):
-    html = await _fetch(client, "https://www.bing.com/search?q=" + _enc(query) + "&count=10" + ("&adlt=strict" if safe else ""), timeout)
+    html = await _fetch(client, "https://www.bing.com/search?q=" + _enc(query) + "&count=20" + ("&adlt=strict" if safe else ""), timeout)
     results = []
     for m in re.finditer(r'<li class="b_algo".*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>(.*?)(?=<li class="b_algo"|</ol>)', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         href, title, rest = m.group(1), _clean(m.group(2)), m.group(3)
         sm = re.search(r"<p[^>]*>(.*?)</p>", rest, re.S)
@@ -280,10 +280,10 @@ async def search_bing(client, query, timeout: float = 5.0, safe: bool = False):
 async def search_baidu(client, query, timeout: float = 5.0):
     """百度搜索：中文内容质量最好，国内话题（怎么/如何类）不会被词典页带偏。
     结果是 baidu.com/link?url= 跳转链，点击可 302 到真实站点，直接可用。"""
-    html = await _fetch(client, "https://www.baidu.com/s?wd=" + _enc(query) + "&rn=10", timeout)
+    html = await _fetch(client, "https://www.baidu.com/s?wd=" + _enc(query) + "&rn=20", timeout)
     results = []
     for m in re.finditer(r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h3>(.*?)(?=<h3|$)', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         href, title, rest = m.group(1), _clean(m.group(2)), m.group(3)
         if not title:
@@ -300,7 +300,7 @@ async def search_google(client, query, timeout: float = 5.0):
     html = await _fetch(client, "https://www.google.com/search?q=" + _enc(query) + "&num=10&hl=zh-CN", timeout)
     results = []
     for m in re.finditer(r'<a[^>]*href="(/url\?q=)?(https?://[^"]+)"[^>]*>(.*?)</a>', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         href = m.group(2)
         if "google." in href:
@@ -474,9 +474,9 @@ async def diagnose(query: str = "test", proxy: str = "") -> dict:
             except Exception as e:
                 out["sources"][name] = {"ok": False, "error": repr(e)[:200]}
         # 直连探测（不解析，只看 HTTP 是否通、返回多大）
-        for name, url in (("raw_bing", "https://www.bing.com/search?q=" + _enc(query) + "&count=10"),
+        for name, url in (("raw_bing", "https://www.bing.com/search?q=" + _enc(query) + "&count=20"),
                           ("raw_ddg", "https://html.duckduckgo.com/html/?q=" + _enc(query)),
-                          ("raw_google", "https://www.google.com/search?q=" + _enc(query) + "&num=10")):
+                          ("raw_google", "https://www.google.com/search?q=" + _enc(query) + "&num=20")):
             t = time.monotonic()
             try:
                 r = await client.get(url, headers=UA, timeout=9)
@@ -589,7 +589,7 @@ def _sort_health_first(results: list) -> list:
 
 
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
-                     max_results: int = 6, timeout: float = TOTAL_TIMEOUT,
+                     max_results: int = 15, timeout: float = TOTAL_TIMEOUT,
                      filter_adult: bool = True) -> list:
     """多源并发搜索，取首个非空结果；带缓存 + 并发去重 + 分级超时。
 
@@ -667,7 +667,7 @@ def _base_url(fn, query):
     if name == "search_ddg":
         return "https://html.duckduckgo.com/html/?q=" + _enc(query)
     if name == "search_bing":
-        return "https://www.bing.com/search?q=" + _enc(query) + "&count=10"
+        return "https://www.bing.com/search?q=" + _enc(query) + "&count=20"
     if name == "search_google":
         return "https://www.google.com/search?q=" + _enc(query) + "&num=10&hl=zh-CN"
     return "https://api.duckduckgo.com/?format=json&no_html=1&q=" + _enc(query)
@@ -682,7 +682,7 @@ async def _parse(fn, client, query, raw):
         results = []
         if j.get("AbstractText"):
             results.append({"title": j.get("Heading") or query, "url": j.get("AbstractURL", ""), "snippet": j["AbstractText"]})
-        for t in (j.get("RelatedTopics") or [])[:5]:
+        for t in (j.get("RelatedTopics") or [])[:15]:
             if t.get("Text"):
                 results.append({"title": t["Text"][:60], "url": t.get("FirstURL", ""), "snippet": t["Text"]})
         return results
@@ -698,7 +698,7 @@ async def _parse(fn, client, query, raw):
 def _parse_ddg_html(html):
     results = []
     for m in re.finditer(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]*class="[^"]*result__a|$)', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         href, title = m.group(1), _clean(m.group(2))
         if href.startswith("//"):
@@ -714,7 +714,7 @@ def _parse_ddg_html(html):
 def _parse_bing_html(html):
     results = []
     for m in re.finditer(r'<li class="b_algo".*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>(.*?)(?=<li class="b_algo"|</ol>)', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         sm = re.search(r"<p[^>]*>(.*?)</p>", m.group(3), re.S)
         item = _clean_bing_result(_clean(m.group(2)), m.group(1), _clean(sm.group(1)) if sm else "")
@@ -726,7 +726,7 @@ def _parse_bing_html(html):
 def _parse_google_html(html):
     results = []
     for m in re.finditer(r'<a[^>]*href="(/url\?q=)?(https?://[^"]+)"[^>]*>(.*?)</a>', html, re.S):
-        if len(results) >= 6:
+        if len(results) >= 15:
             break
         href = m.group(2)
         if "google." in href:
