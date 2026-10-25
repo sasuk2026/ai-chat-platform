@@ -63,6 +63,13 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 #input { flex: 1; border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit; resize: none; max-height: 140px; min-height: 44px; outline: none; transition: border-color .15s; }
 #input:focus { border-color: var(--primary); }
 #status { max-width: 720px; margin: 0 auto 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
+/* 待发送图片预览 */
+.img-prev { max-width: 720px; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 8px; }
+.img-prev:empty { display: none; }
+.img-thumb { position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: #eef0f6; }
+.img-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.img-thumb .x { position: absolute; top: -2px; right: -2px; width: 20px; height: 20px; line-height: 18px; text-align: center; border-radius: 50%; background: rgba(15,17,26,.7); color: #fff; font-size: 13px; cursor: pointer; border: 1px solid #fff; }
+.img-thumb .x:hover { background: var(--danger); }
 
 /* 设置弹窗 */
 #settings { position: fixed; inset: 0; background: rgba(15,17,26,.5); display: none; align-items: center; justify-content: center; z-index: 50; }
@@ -144,8 +151,11 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
     <button id="toBottom" class="to-bottom" title="回到最新消息">↓ 回到底部</button>
     <div id="inputbar">
       <div id="status"></div>
+      <div id="imgPrev" class="img-prev"></div>
       <div id="inputwrap">
-        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="btn" id="imgBtn" title="发送图片（AI 可识别图中内容）" style="padding:10px 12px;font-size:16px;">📷</button>
+        <input type="file" id="imgInput" accept="image/*" multiple style="display:none;">
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行；可点 📷 发送图片让 AI 识别"></textarea>
         <button class="btn primary" id="sendBtn">发送</button>
         <button class="btn" id="stopBtn" style="display:none;">■ 停止</button>
       </div>
@@ -227,6 +237,7 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
       兼容任何 OpenAI 协议服务：OpenAI / DeepSeek / 通义千问 / Ollama / OpenRouter / 中转站。
       代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
       平台还内置 Agno AgentOS 智能体接口（/agno，由服务端环境变量配置）。
+      发送图片需要模型支持视觉（如 gpt-4o-mini / gpt-4o），否则会报错——点 📷 可图文一起发给 AI 识别。
     </div>
     <div class="row">
       <button class="btn primary" id="saveBtn">保存</button>
@@ -834,6 +845,16 @@ let controller = null;
 const $ = s => document.querySelector(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/* 待发送的图片（base64 data URL，已压缩） */
+let pendingImages = [];
+
+/* 从消息内容里抽取纯文本：兼容纯字符串与多模态数组（图文混合） */
+function msgText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.filter(p => p && p.type === 'text').map(p => p.text || '').join('\n');
+  return '';
+}
+
 /* ================= 滚动跟随（贴底才跟随，阅读时不打断） ================= */
 let stickToBottom = true;          // 用户是否"贴着底部"。贴底才自动跟随新内容
 function isNearBottom(box) {
@@ -908,7 +929,23 @@ function msgEl(m, idx) {
   who.className = 'who'; who.textContent = m.role === 'user' ? '你' : 'AI';
   const b = document.createElement('div');
   b.className = 'bubble';
-  if (m.role === 'user') b.textContent = m.content;
+  if (m.role === 'user') {
+    const c = m.content;
+    if (typeof c === 'string' || !Array.isArray(c)) {
+      b.textContent = (typeof c === 'string') ? c : '';
+    } else {
+      // 多模态：文本 + 图片
+      let html = '';
+      c.filter(p => p && p.type === 'text' && p.text).forEach(p => {
+        html += '<div style="white-space:pre-wrap;">' + esc(p.text) + '</div>';
+      });
+      c.filter(p => p && p.type === 'image_url').forEach(p => {
+        const u = (p.image_url && p.image_url.url) || '';
+        html += '<img src="' + esc(u) + '" style="max-width:240px;max-height:240px;border-radius:8px;margin:4px 6px 0 0;display:inline-block;vertical-align:top;" alt="图片">';
+      });
+      b.innerHTML = html;
+    }
+  }
   else {
     b.innerHTML = renderMD(m.content || '');
     if (m.sources && m.sources.length) {
@@ -950,7 +987,7 @@ function regenerate(idx) {
   const userText = msgs[u].content;
   conv.messages = msgs.slice(0, u + 1);   // 保留到该提问为止，旧回复彻底丢弃
   Store.saveConv(conv); renderMsgs(); renderConvs();
-  generate(userText, false);
+  generate(false);
 }
 
 // 编辑重问：丢弃该提问及之后内容，内容填回输入框，重新发送时按首次生成处理
@@ -958,7 +995,7 @@ function editUser(idx) {
   if (busy) return;
   const msgs = conv.messages;
   if (!msgs[idx] || msgs[idx].role !== 'user') return;
-  const text = msgs[idx].content;
+  const text = msgText(msgs[idx].content);
   conv.messages = msgs.slice(0, idx);
   Store.saveConv(conv); renderMsgs(); renderConvs();
   const input = $('#input');
@@ -988,25 +1025,43 @@ async function send() {
   stickToBottom = true;   // 用户主动发送 → 跟随到最新
   const input = $('#input');
   const text = input.value.trim();
-  if (!text) return;
+  const imgs = pendingImages.slice();
+  if (!text && !imgs.length) return;
   if (!settings.apiBase || !settings.apiKey) { setStatus('⚠️ 请先点击左下角 ⚙️ 设置 配置 API 地址和 Key'); openSettings(); return; }
   input.value = ''; input.style.height = 'auto';
-  conv.messages.push({ role: 'user', content: text });
+  // 图文混合：构造 OpenAI 多模态消息；纯文本则保持字符串（兼容旧对话）
+  let content;
+  if (imgs.length) {
+    const parts = [];
+    if (text) parts.push({ type: 'text', text: text });
+    imgs.forEach(function (d) { parts.push({ type: 'image_url', image_url: { url: d } }); });
+    content = parts;
+  } else {
+    content = text;
+  }
+  conv.messages.push({ role: 'user', content: content });
+  const titleText = text || (imgs.length ? '📷 图片' : '新对话');
   if (conv.title === '新对话') {
-    conv.title = text.slice(0, 20) + (text.length > 20 ? '…' : '');
+    conv.title = titleText.slice(0, 20) + (titleText.length > 20 ? '…' : '');
     renderTitle();
   }
+  pendingImages = [];
+  renderImgPrev();
   Store.saveConv(conv); renderConvs();
-  await generate(text, true);
+  await generate(true);
 }
 
-async function generate(text, isFreshSend) {
+async function generate(isFreshSend) {
   if (busy) return;
   busy = true; stopFlag = false;
   controller = new AbortController();
   $('#sendBtn').style.display = 'none'; $('#stopBtn').style.display = '';
   setStatus('');
   if (isFreshSend) renderMsgs();
+
+  // 从最新一条用户消息（可能是图文混合）抽取文本，用于搜索意图理解等
+  const userMsg = (conv.messages || []).filter(m => m.role === 'user').pop();
+  const text = msgText(userMsg ? userMsg.content : '');
 
   const searchOn = $('#searchToggle').checked;
   let sources = [];
@@ -1023,7 +1078,7 @@ async function generate(text, isFreshSend) {
       try {
         setStatus('🧠 正在理解你的意图…');
         var hist = (conv.messages || []).slice(-8).map(function (m) {
-          return { role: (m.role === 'assistant') ? 'assistant' : 'user', content: m.content };
+          return { role: (m.role === 'assistant') ? 'assistant' : 'user', content: msgText(m.content) };
         });
         var got = await Promise.race([
           buildSearchQueries(hist.concat([{ role: 'user', content: text }])),
@@ -1078,8 +1133,7 @@ async function generate(text, isFreshSend) {
   // 对话内管理插件：注入工具使用指引
   // 【严格闸门】只有用户这次明确提到「插件/plugin/install」时才给 AI 工具，
   // 否则普通聊天（写诗、问天气、翻译）AI 也会跑去查 GitHub。
-  const lastUserMsg = (conv.messages || []).filter(m => m.role === 'user').pop();
-  const plugIntent = /(插件|plugin|install)/i.test(lastUserMsg ? lastUserMsg.content : '');
+  const plugIntent = /(插件|plugin|install)/i.test(text);
   if (settings.apiKey && plugIntent) {
     let sysTxt = PLUGIN_TOOL_SYS;
     if (plugins.length) {
@@ -1327,6 +1381,56 @@ input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 140) + 'px';
 });
+
+/* ================= 发送图片（AI 可识别图中内容） ================= */
+function renderImgPrev() {
+  const box = $('#imgPrev');
+  box.innerHTML = '';
+  pendingImages.forEach(function (d, i) {
+    const t = document.createElement('div');
+    t.className = 'img-thumb';
+    t.innerHTML = '<img src="' + esc(d) + '"><span class="x" title="移除">×</span>';
+    t.querySelector('.x').onclick = function () {
+      pendingImages.splice(i, 1);
+      renderImgPrev();
+    };
+    box.appendChild(t);
+  });
+}
+// 读取图片并压缩到 <=1280px，减少 base64 体积（避免超出 localStorage 与请求上限）
+function fileToDataUrl(file, cb) {
+  const reader = new FileReader();
+  reader.onload = function () {
+    const img = new Image();
+    img.onload = function () {
+      const max = 1280;
+      let w = img.width, h = img.height;
+      if (w > max || h > max) {
+        const r = Math.min(max / w, max / h);
+        w = Math.round(w * r); h = Math.round(h * r);
+      }
+      try {
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        cb(c.toDataURL('image/jpeg', 0.82));
+      } catch (e) { cb(reader.result); }
+    };
+    img.onerror = function () { cb(reader.result); };
+    img.src = reader.result;
+  };
+  reader.onerror = function () {};
+  reader.readAsDataURL(file);
+}
+$('#imgBtn').onclick = function () { $('#imgInput').click(); };
+$('#imgInput').onchange = function () {
+  const files = Array.from(this.files || []);
+  this.value = '';
+  files.forEach(function (f) {
+    if (!f.type || f.type.indexOf('image/') !== 0) return;
+    fileToDataUrl(f, function (d) { pendingImages.push(d); renderImgPrev(); });
+  });
+};
 
 /* 移动端：软键盘弹出时把输入框顶到键盘上方，避免被遮挡 */
 (function mobileKeyboard() {
