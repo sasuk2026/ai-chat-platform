@@ -888,7 +888,7 @@ function msgEl(m, idx) {
     if (m.sources && m.sources.length) {
       const s = document.createElement('div');
       s.className = 'sources';
-      s.innerHTML = '🌐 搜索来源：' + m.sources.map(x => '<a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.title.slice(0, 18)) + '</a>').join('');
+      s.innerHTML = (m.qused ? '🌐 搜索词「' + esc(m.qused) + '」的来源：' : '🌐 搜索来源：') + m.sources.map(x => '<a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.title.slice(0, 18)) + '</a>').join('');
       b.appendChild(s);
     }
   }
@@ -981,6 +981,7 @@ async function generate(text, isFreshSend) {
 
   const searchOn = $('#searchToggle').checked;
   let sources = [];
+  let searchUsedQuery = '';
   const messages = [];
   // 自定义系统提示词
   const sys = (settings.sysPrompt || '').trim();
@@ -995,10 +996,11 @@ async function generate(text, isFreshSend) {
       });
       const j = await r.json();
       sources = j.results || [];
+      searchUsedQuery = j.query_used || '';
     } catch {}
     if (sources.length) {
       messages.push({ role: 'system', content: '以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n' +
-        sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') });
+        sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') + '\n（本次搜索关键词：' + (searchUsedQuery || '原句') + '）' });
     }
     setStatus('');
   }
@@ -1079,6 +1081,7 @@ async function generate(text, isFreshSend) {
   }
   ph.content = finalText || '(已停止)';
   ph.sources = sources;
+  ph.qused = searchUsedQuery;
   el.remove();
   conv.messages.push(ph);
   box.appendChild(msgEl(ph, conv.messages.length - 1));
