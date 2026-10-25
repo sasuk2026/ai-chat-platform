@@ -1348,9 +1348,17 @@ function msgEl(m, idx) {
       });
     }
     if (m.sources && m.sources.length) {
-      const s = document.createElement('div');
+      // 搜索来源默认收起，点开才展开（结果数提升到 15 条后默认展开太占地方）
+      const s = document.createElement('details');
       s.className = 'sources';
-      s.innerHTML = (m.qused ? '🌐 搜索词「' + esc(m.qused) + '」的来源：' : '🌐 搜索来源：') + m.sources.map(x => '<a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.title.slice(0, 18)) + '</a>').join('');
+      const sum = document.createElement('summary');
+      sum.style.cursor = 'pointer';
+      sum.textContent = (m.qused ? '🌐 搜索词「' + m.qused + '」的 ' : '🌐 ') + m.sources.length + ' 个来源（点击展开）';
+      s.appendChild(sum);
+      const links = document.createElement('div');
+      links.style.marginTop = '6px';
+      links.innerHTML = m.sources.map(x => '<a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.title.slice(0, 18)) + '</a>').join('');
+      s.appendChild(links);
       b.appendChild(s);
     }
   }
@@ -1519,7 +1527,7 @@ async function generate(isFreshSend) {
             if (!seen[list[si].url]) { seen[list[si].url] = 1; sources.push(list[si]); }
           }
         }
-        sources = sources.slice(0, 8);
+        sources = sources.slice(0, 15);
         searchUsedQuery = qs.slice(0, 2).join('、');
       } catch (e) {}
     }
