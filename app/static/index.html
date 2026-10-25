@@ -100,6 +100,11 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 .plug-add input:focus, .plug-add textarea:focus { border-color: var(--primary); }
 .plug-add .row { display: flex; gap: 10px; margin-top: 12px; }
 #menuBtn { display: none; }
+/* ===== 回到底部浮动按钮（阅读时不打断用户） ===== */
+.to-bottom { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom, 0px)); z-index: 30; display: none; align-items: center; gap: 6px; background: var(--primary); color: #fff; border: none; border-radius: 22px; padding: 9px 15px; font-size: 13px; cursor: pointer; box-shadow: 0 6px 18px rgba(99,102,241,.45); transition: transform .12s, opacity .12s; }
+.to-bottom:hover { background: var(--primary-h); }
+.to-bottom.show { display: inline-flex; }
+.to-bottom:active { transform: scale(.94); }
 #scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 39; }
 #scrim.show { display: block; }
 /* ===== 插件发现（AI 搜仓库并安装） ===== */
@@ -136,6 +141,7 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
       <button class="btn" id="plugBtn" style="margin-left:8px;"><span id="plugCount">🔌 插件</span></button>
     </div>
     <div id="msgs"></div>
+    <button id="toBottom" class="to-bottom" title="回到最新消息">↓ 回到底部</button>
     <div id="inputbar">
       <div id="status"></div>
       <div id="inputwrap">
@@ -449,7 +455,7 @@ async function runChatStream(messages, tools, el, box) {
           else if (think && acc) html = '<details style="margin-bottom:6px;"><summary style="font-size:12px;color:#8a90a3;cursor:pointer;">💭 已深度思考（点击展开）</summary><div style="color:#8a90a3;font-size:12px;white-space:pre-wrap;border-left:2px solid #d5d9e6;padding-left:8px;margin-top:6px;">' + esc(think.slice(0,2000)) + '</div></details>';
           html += renderMD(acc);
           bubble.innerHTML = html;
-          box.scrollTop = box.scrollHeight;
+          smartScroll(box);
         }
       } catch {}
     }
@@ -826,6 +832,24 @@ let controller = null;
 const $ = s => document.querySelector(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/* ================= 滚动跟随（贴底才跟随，阅读时不打断） ================= */
+let stickToBottom = true;          // 用户是否"贴着底部"。贴底才自动跟随新内容
+function isNearBottom(box) {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+}
+function scrollToBottom(box) { box.scrollTop = box.scrollHeight; }
+function updateToBottomBtn(box) {
+  const btn = $('#toBottom');
+  if (!box) box = $('#msgs');
+  if (isNearBottom(box)) { btn.classList.remove('show'); stickToBottom = true; }
+  else { btn.classList.add('show'); stickToBottom = false; }
+}
+// 仅在用户贴底时跟随滚动；否则保持原阅读位置，并提示"回到底部"
+function smartScroll(box) {
+  if (stickToBottom) scrollToBottom(box);
+  updateToBottomBtn(box);
+}
+
 /* ================= Markdown ================= */
 function esc(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderMD(md) {
@@ -951,12 +975,15 @@ function renderMsgs() {
   }
   conv.messages.forEach((m, i) => box.appendChild(msgEl(m, i)));
   box.scrollTop = box.scrollHeight;
+  stickToBottom = true;
+  $('#toBottom').classList.remove('show');
 }
 function setStatus(t) { $('#status').textContent = t || ''; }
 
 /* ================= 发送（SSE 流式） ================= */
 async function send() {
   if (busy) return;
+  stickToBottom = true;   // 用户主动发送 → 跟随到最新
   const input = $('#input');
   const text = input.value.trim();
   if (!text) return;
@@ -1064,7 +1091,7 @@ async function generate(text, isFreshSend) {
   const ph = { role: 'assistant', content: '' };
   const el = msgEl(ph);
   box.appendChild(el);
-  box.scrollTop = box.scrollHeight;
+  smartScroll(box);
 
   let finalText = '';
   try {
@@ -1117,7 +1144,7 @@ async function generate(text, isFreshSend) {
   el.remove();
   conv.messages.push(ph);
   box.appendChild(msgEl(ph, conv.messages.length - 1));
-  box.scrollTop = box.scrollHeight;
+  smartScroll(box);
   Store.saveConv(conv); renderConvs();
   busy = false;
   $('#sendBtn').style.display = ''; $('#stopBtn').style.display = 'none';
@@ -1268,6 +1295,20 @@ $('#stopBtn').onclick = () => { stopFlag = true; if (controller) controller.abor
 $('#menuBtn').onclick = () => { $('#sidebar').classList.add('open'); $('#scrim').classList.add('show'); };
 $('#scrim').onclick = closeSidebar;
 $('#settings').addEventListener('click', e => { if (e.target.id === 'settings') closeSettings(); });
+
+/* 滚动跟随：用户往上读就不自动回底；回到底部按钮点击后恢复跟随 */
+(function scrollFollow() {
+  const box = $('#msgs');
+  box.addEventListener('scroll', function () {
+    if (isNearBottom(box)) { stickToBottom = true; $('#toBottom').classList.remove('show'); }
+    else { stickToBottom = false; $('#toBottom').classList.add('show'); }
+  });
+  $('#toBottom').onclick = function () {
+    stickToBottom = true;
+    scrollToBottom(box);
+    $('#toBottom').classList.remove('show');
+  };
+})();
 const input = $('#input');
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
