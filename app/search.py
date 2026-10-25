@@ -403,6 +403,42 @@ async def diagnose(query: str = "test", proxy: str = "") -> dict:
     return out
 
 
+# ---------------- 口语指令清洗：把"去查X / 帮我搜一下X"提炼成关键词"X" ----------------
+_FILLER = (
+    "帮我查一下","帮我查查","帮我查","帮我搜一下","帮我搜索一下","帮我搜索","帮我搜",
+    "帮我看看","帮我看下","帮我找一下","帮我找找","帮我找",
+    "帮忙查一下","帮忙查查","帮忙搜一下",
+    "去查一下","去查查","去查","去搜一下","去搜搜","去搜",
+    "查一下","查查","查下","查询一下","查询下","查询",
+    "搜索一下","搜索下","搜一下","搜搜","搜下","搜索",
+    "请问一下","请问","我想知道","我想了解一下","我想了解","我想查一下","我想查查",
+    "告诉我一下","告诉我","在网上查","上网查","网上查","在线查","百度一下","谷歌一下",
+    "什么是","什么叫","现在","立刻","马上","赶紧","快去",
+)
+
+
+def clean_query(q: str) -> str:
+    """把口语指令清洗成搜索引擎友好的关键词。
+
+    例：'去查怎么做爱' → '怎么做爱'；'帮我查一下北京天气' → '北京天气'；
+        'python 教程' → 原样保留。避免把'去查'这类指令词一起丢给搜索引擎，
+        导致结果被'去'字词典之类的内容带偏。
+    """
+    s = (q or "").strip()
+    changed = True
+    while changed and s:
+        changed = False
+        for w in _FILLER:
+            if s.startswith(w) and len(s) > len(w):
+                s = s[len(w):].strip()
+                changed = True
+                break
+    s = re.sub(r"[？?！!。，,．.\s]+$", "", s)
+    while s and s[-1] in "的了呢吗啊吧嘛呀":
+        s = s[:-1].rstrip("，。,. ")
+    return s.strip()
+
+
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
                      max_results: int = 6, timeout: float = TOTAL_TIMEOUT) -> list:
     """多源并发搜索，取首个非空结果；带缓存 + 并发去重 + 分级超时。
@@ -411,9 +447,10 @@ async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
     - 短超时内无结果才启用 HTML 爬虫兜底（Bing / Google）。
     - 相同 query 的并发请求共享一次真实搜索，重复查询直接读缓存。
     """
-    query = (query or "").strip()
-    if not query:
+    raw_query = (query or "").strip()
+    if not raw_query:
         return []
+    query = clean_query(raw_query) or raw_query   # 关键：用提炼后的关键词去搜
 
     key = _cache_key(query, engine, max_results)
     hit = _cache_get(key)
