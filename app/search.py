@@ -364,6 +364,42 @@ async def _search_once(client, query: str, engine: str, proxy: str, max_results:
                 pass
 
 
+async def diagnose(query: str = "test", proxy: str = "") -> dict:
+    """体检：逐个测试各搜索源，返回真实可用情况（用于排查线上搜不出东西的问题）。"""
+    out = {"ddgs_available": DDGS_AVAILABLE, "proxy": proxy or "(未设置)", "sources": {}}
+    async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=9, limits=_LIMITS) as client:
+        if DDGS_AVAILABLE:
+            t = time.monotonic()
+            try:
+                r = await asyncio.wait_for(_ddgs_search(query, 5), timeout=9)
+                out["sources"]["ddgs"] = {"ok": True, "count": len(r), "ms": int((time.monotonic() - t) * 1000)}
+            except Exception as e:
+                out["sources"]["ddgs"] = {"ok": False, "error": repr(e)[:200]}
+        for name, fn in (("ddg_api", search_ddg_api), ("ddg_html", search_ddg),
+                         ("bing", search_bing), ("google", search_google)):
+            t = time.monotonic()
+            try:
+                r = await fn(client, query, timeout=9)
+                out["sources"][name] = {"ok": True, "count": len(r), "ms": int((time.monotonic() - t) * 1000)}
+            except Exception as e:
+                out["sources"][name] = {"ok": False, "error": repr(e)[:200]}
+        # 直连探测（不解析，只看 HTTP 是否通、返回多大）
+        for name, url in (("raw_bing", "https://www.bing.com/search?q=" + _enc(query) + "&count=10"),
+                          ("raw_ddg", "https://html.duckduckgo.com/html/?q=" + _enc(query)),
+                          ("raw_google", "https://www.google.com/search?q=" + _enc(query) + "&num=10")):
+            t = time.monotonic()
+            try:
+                r = await client.get(url, headers=UA, timeout=9)
+                body = r.text
+                out["sources"][name] = {
+                    "http": r.status_code, "bytes": len(body), "ms": int((time.monotonic() - t) * 1000),
+                    "has_result_mark": ("b_algo" in body) or ("result__a" in body) or ("<h3" in body),
+                }
+            except Exception as e:
+                out["sources"][name] = {"ok": False, "error": repr(e)[:200]}
+    return out
+
+
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
                      max_results: int = 6, timeout: float = TOTAL_TIMEOUT) -> list:
     """多源并发搜索，取首个非空结果；带缓存 + 并发去重 + 分级超时。
