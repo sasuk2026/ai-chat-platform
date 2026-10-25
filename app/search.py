@@ -532,6 +532,62 @@ def clean_query(q: str) -> str:
     return s.strip()
 
 
+# ---------------- 科普/健康搜索：露骨性话题改写成干净的「性健康 + 科普」措辞 ----------------
+# 实测：Bing/DDG 对「性爱 / 做爱 / 体位」等词会强排色情站，即使追加「科普/健康」、
+# 即使加 site: 限定权威域名也照样返回色情站；但只要把措辞换成「性生活 / 性行为 /
+# 性健康」再搜，就能稳定顶出真正的性教育/健康科普站（KnowSex、性欲社、维基百科等）。
+# 因此开启成人过滤时，对露骨性话题自动改写措辞再搜，并优先权威健康域名。
+_SENSITIVE_TOKENS = (
+    "性爱", "做爱", "爱爱", "性交", "体位", "姿势", "约炮", "嫖", "裸聊",
+    "春药", "自慰", "手淫", "AV", "av", "黄片", "成人影片", "做爱视频",
+)
+# 改写时优先排在结果前列的权威健康 / 科学 / 百科域名
+HEALTH_SCIENCE_DOMAINS = {
+    "knowsex.net", "xingyushe.cn", "wikipedia.org", "zh.wikipedia.org",
+    "39.net", "39health.net", "dxy.cn", "dxy.com", "haodf.com", "youlai.cn",
+    "mayoclinic.org", "who.int", "webmd.com", "baike.baidu.com", "zhihu.com",
+    "thepaper.cn", "news.sina.com.cn", "health.qq.com", "hen.com",
+}
+
+
+def _is_sensitive(q: str) -> bool:
+    return any(t in (q or "") for t in _SENSITIVE_TOKENS)
+
+
+def rephrase_to_health(q: str) -> str:
+    """把露骨的性话题改写成干净的「性健康 + 科普」搜索措辞。
+
+    例：'性爱体位大全' → '性生活 性健康 健康知识 科普'
+    """
+    s = q or ""
+    # 去掉成人限定词（这些只会把结果拉向色情站）
+    s = re.sub(r"(色情|裸|黄片|AV|av|成人|视频|影片|图片|写真|激情|约炮|嫖|春药|自慰|手淫|图解|姿势大全|体位大全)", " ", s)
+    # 露骨名词 → 干净的性健康词（这是顶出科普内容的关键）
+    s = s.replace("性爱", "性生活").replace("做爱", "性生活").replace("爱爱", "性生活").replace("性交", "性行为")
+    # 残留的「体位 / 姿势」去掉（该细分无干净中文源，留着只会触发色情排名）
+    s = re.sub(r"(体位|姿势)", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        s = "性生活 性健康"
+    return (s + " 健康知识 科普").strip()
+
+
+def _host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        h = urlparse(url or "").netloc.lower()
+        return h[4:] if h.startswith("www.") else h
+    except Exception:
+        return ""
+
+
+def _sort_health_first(results: list) -> list:
+    """科普/健康改写出来的结果，把权威健康/科学/百科域名排到最前面。"""
+    def score(r):
+        return 0 if _host_of(r.get("url", "")) in HEALTH_SCIENCE_DOMAINS else 1
+    return sorted(results, key=score)
+
+
 async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
                      max_results: int = 6, timeout: float = TOTAL_TIMEOUT,
                      filter_adult: bool = True) -> list:
@@ -540,7 +596,9 @@ async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
     - 首选 ddgs（直连 DuckDuckGo 接口，秒回、稳定）。
     - 短超时内无结果才启用 HTML 爬虫兜底（Bing / Google）。
     - 相同 query 的并发请求共享一次真实搜索，重复查询直接读缓存。
-    - filter_adult=True 时屏蔽色情站点结果（并对 Bing 开启严格安全搜索）。
+    - filter_adult=True 时屏蔽色情站点结果（并对 Bing 开启严格安全搜索）；
+      若露骨性话题被全部过滤成空，则自动改写成「性健康+科普」措辞再搜，
+      优先返回权威健康/百科内容（科普健康类搜索）。
     """
     raw_query = (query or "").strip()
     if not raw_query:
@@ -569,13 +627,24 @@ async def web_search(query: str, engine: str = "duckduckgo", proxy: str = "",
                                      timeout=timeout, limits=_LIMITS) as client:
             results = (await _search_once(client, query, engine, proxy, max_results,
                                           filter_adult=filter_adult))[:max_results]
-            # 优雅降级：开启过滤后若结果为空（说明返回几乎全是成人内容被全剔除），
-            # 改用宽松搜索（不加 Bing 严格模式），再用域名黑名单精准剔除成人站，
-            # 尽量保留维基/百科/健康科普类结果，避免「开了过滤反而搜不出」。
+            if filter_adult and results:
+                results = filter_adult_results(results)
+            # 优雅降级 1：开启过滤后若结果为空（说明返回几乎全是成人内容被全剔除），
+            # 改用宽松搜索（不加 Bing 严格模式），再用域名黑名单精准剔除成人站。
             if filter_adult and not results:
                 raw = (await _search_once(client, query, engine, proxy, max_results,
                                           filter_adult=False))[:max_results]
                 results = filter_adult_results(raw)
+            # 优雅降级 2（科普健康搜索）：露骨性话题被过滤干净后，
+            # 改写成「性健康 + 科普」措辞再搜，优先权威健康/百科域名。
+            if filter_adult and not results and _is_sensitive(raw_query):
+                rq = rephrase_to_health(raw_query)
+                if rq and rq != query:
+                    hr = (await _search_once(client, rq, engine, proxy, max_results,
+                                              filter_adult=False))[:max_results]
+                    hr = filter_adult_results(hr)
+                    if hr:
+                        results = _sort_health_first(hr)
     except Exception:
         results = []
 
