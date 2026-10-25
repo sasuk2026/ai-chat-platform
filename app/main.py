@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .search import web_search, diagnose
+from .search import web_search, diagnose, clean_query
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -172,8 +172,9 @@ async def search(request: Request):
     query = body.get("query") or ""
     engine = body.get("engine") or "duckduckgo"
     proxy = body.get("proxy") or ""
-    results = await web_search(query, engine=engine, proxy=proxy)
-    return JSONResponse({"results": results})
+    q_used = clean_query(query) or query
+    results = await web_search(q_used, engine=engine, proxy=proxy)
+    return JSONResponse({"results": results, "query_used": q_used})
 
 
 @app.post("/api/search-debug")
