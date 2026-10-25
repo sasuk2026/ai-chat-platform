@@ -578,7 +578,7 @@ async def search(request: Request):
     proxy = body.get("proxy") or ""
     q_used = clean_query(query) or query
     filter_adult = bool(body.get("filter_adult", True))
-    results = await web_search(q_used, engine=engine, proxy=proxy, filter_adult=filter_adult)
+    results = await web_search(q_used, engine=engine, proxy=proxy, filter_adult=filter_adult, max_results=15)
     return JSONResponse({"results": results, "query_used": q_used, "filter_adult": filter_adult})
 
 
