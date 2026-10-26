@@ -398,6 +398,79 @@ async def gh_delete(request: Request):
         return JSONResponse({"ok": False, "error": str(e)[:300]})
 
 
+@app.post("/api/gh/delete-repo")
+async def gh_delete_repo(request: Request):
+    """删除整个 GitHub 仓库（不可恢复，调用前前端会先确认仓库存在）。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    repo = (body.get("repo") or "").strip()
+    if not token or not repo or "/" not in repo:
+        return JSONResponse({"ok": False, "error": "需要 token 和 repo(owner/name)"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.delete(f"{GH_API}/repos/{repo}", headers=_gh_headers(token))
+            if r.status_code in (200, 202, 204):
+                return JSONResponse({"ok": True, "repo": repo, "deleted": True})
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+            return JSONResponse({"ok": True, "repo": repo, "deleted": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/gh/search")
+async def gh_search(request: Request):
+    """用 GitHub 令牌搜索仓库：默认搜 GitHub 全站；mine=true 只搜登录用户自己的仓库。"""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    q = (body.get("query") or "").strip()
+    mine = bool(body.get("mine"))
+    if not token:
+        return JSONResponse({"ok": False, "error": "未提供 GitHub 令牌"})
+    if not q:
+        return JSONResponse({"ok": False, "error": "搜索关键词不能为空"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            if mine:
+                # 搜用户自己的仓库：列出后本地按关键词过滤（更准、无 rate limit 压力）
+                r = await client.get(f"{GH_API}/user/repos",
+                                     params={"per_page": 100, "sort": "updated", "affiliation": "owner"},
+                                     headers=_gh_headers(token))
+                if r.status_code >= 300:
+                    return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+                items = r.json() or []
+                kw = q.lower()
+                matched = [it for it in items
+                           if kw in (it.get("full_name") or "").lower()
+                           or kw in (it.get("description") or "").lower()]
+                repos = [{
+                    "name": it.get("full_name"), "private": bool(it.get("private")),
+                    "desc": (it.get("description") or "")[:160],
+                    "stars": it.get("stargazers_count", 0), "lang": it.get("language"),
+                    "url": it.get("html_url"), "branch": it.get("default_branch") or "main",
+                } for it in matched]
+                return JSONResponse({"ok": True, "scope": "mine", "query": q, "count": len(repos), "repos": repos})
+            else:
+                # 搜 GitHub 全站公开仓库（带令牌认证，避免匿名限流）
+                r = await client.get(f"{GH_API}/search/repositories",
+                                     params={"q": q, "per_page": 20, "sort": "stars", "order": "desc"},
+                                     headers=_gh_headers(token))
+                if r.status_code >= 300:
+                    return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
+                data = r.json() or {}
+                items = data.get("items") or []
+                repos = [{
+                    "name": it.get("full_name"), "private": bool(it.get("private")),
+                    "desc": (it.get("description") or "")[:160],
+                    "stars": it.get("stargazers_count", 0), "lang": it.get("language"),
+                    "url": it.get("html_url"), "branch": it.get("default_branch") or "main",
+                } for it in items]
+                return JSONResponse({"ok": True, "scope": "global", "query": q,
+                                     "total": data.get("total_count"), "count": len(repos), "repos": repos})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
 # ---------------- Render 发布（用户自带密钥） ----------------
 @app.post("/api/render/owners")
 async def render_owners(request: Request):
@@ -599,6 +672,26 @@ async def render_warm(request: Request):
         return JSONResponse({"ok": r.status_code < 400, "status": r.status_code,
                              "ms": ms, "content_type": ct,
                              "note": "网站可正常访问" if r.status_code < 400 else "网站返回错误状态"})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/render/delete-service")
+async def render_delete_service(request: Request):
+    """删除 Render 服务（站点），会把线上网站一起删掉，不可恢复。"""
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    sid = (body.get("service") or "").strip()
+    if not key or not sid:
+        return JSONResponse({"ok": False, "error": "需要 Render Key 和 service ID"})
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.delete(f"{RENDER_API}/services/{sid}", headers=_rh_headers(key))
+            if r.status_code in (200, 202, 204):
+                return JSONResponse({"ok": True, "service": sid, "deleted": True})
+            if r.status_code >= 300:
+                return JSONResponse({"ok": False, "error": f"Render HTTP {r.status_code}: {r.text[:200]}"})
+            return JSONResponse({"ok": True, "service": sid, "deleted": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:300]})
 
