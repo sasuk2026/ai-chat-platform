@@ -307,8 +307,28 @@ function renderPlugins() {
     info.onclick = function () { openPlugEdit(p.id); };
     const del = document.createElement('span');
     del.className = 'plug-del'; del.textContent = '🗑';
-    del.onclick = () => { plugins = plugins.filter(x => x.id !== p.id); savePlugins(); renderPlugins(); renderPlugBadge(); };
+    del.title = '申请删除（需在面板确认）';
+    del.onclick = () => {
+      if (!confirm('确定要删除插件「' + p.name + '」吗？此操作不可恢复。')) return;
+      plugins = plugins.filter(x => x.id !== p.id); savePlugins(); renderPlugins(); renderPlugBadge();
+    };
     d.appendChild(sw); d.appendChild(info); d.appendChild(del);
+    // 待确认删除：AI 申请的删除会先进入此状态，必须用户点「确认删除」才会真正移除（防误删）
+    if (p.pendingDelete) {
+      const bar = document.createElement('div');
+      bar.style.cssText = 'grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:4px;padding:4px 8px;background:#3a2030;border:1px solid #5c2a40;border-radius:6px;font-size:12px;color:#ffd9e3;';
+      bar.innerHTML = '<span>⚠️ 待确认删除</span>';
+      const ok = document.createElement('button');
+      ok.textContent = '确认删除';
+      ok.style.cssText = 'margin-left:auto;padding:2px 10px;border:0;border-radius:5px;background:#e5484d;color:#fff;cursor:pointer;';
+      ok.onclick = () => { plugins = plugins.filter(x => x.id !== p.id); savePlugins(); renderPlugins(); renderPlugBadge(); };
+      const no = document.createElement('button');
+      no.textContent = '取消';
+      no.style.cssText = 'padding:2px 10px;border:0;border-radius:5px;background:#555c6b;color:#fff;cursor:pointer;';
+      no.onclick = () => { p.pendingDelete = false; savePlugins(); renderPlugins(); renderPlugBadge(); };
+      bar.appendChild(ok); bar.appendChild(no);
+      d.appendChild(bar);
+    }
     box.appendChild(d);
   });
 }
@@ -401,7 +421,7 @@ const PLUGIN_TOOLS = [
     type: 'function',
     function: {
       name: 'delete_plugin',
-      description: '删除一个已安装的插件。当用户明确要求卸载/删掉某个插件时使用。',
+      description: '申请删除一个已安装的插件（注意：这只是「提交删除申请」，不会立刻删除——必须等用户在界面插件列表点「确认删除」后才会真正移除；若用户没确认，插件一直保留）。当用户明确要求卸载/删掉某个插件时使用；调用后请直接告诉用户去插件面板点确认，不要重复调用。',
       parameters: {
         type: 'object',
         properties: { target: { type: 'string', description: '插件名称或 id，支持部分匹配' } },
@@ -1090,19 +1110,24 @@ function applyPluginAction(a) {
       const p = findPlugin(a.target);
       if (!p) return '未找到插件：' + a.target;
       const mode = a.mode || 'set_content';
-      if (mode === 'set_content') { p.content = a.content || ''; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已重写「' + p.name + '」正文（' + p.content.length + ' 字）'; }
-      if (mode === 'append') { p.content = (p.content || '') + '\n\n' + (a.content || ''); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已向「' + p.name + '」追加设定'; }
-      if (mode === 'rename') { const on = p.name; p.name = a.new_name || ''; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + on + '」已改名为「' + p.name + '」'; }
+      const newText = (a.content !== undefined) ? a.content : a.new_text;
+      if (mode === 'set_content') {
+        if (newText == null || String(newText).trim() === '') return '❌ 未提供 content（set_content 需要完整新正文），已拒绝以免清空插件。请用 content= 给出改好的完整正文。';
+        p.content = String(newText); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已重写「' + p.name + '」正文（' + p.content.length + ' 字）';
+      }
+      if (mode === 'append') { p.content = (p.content || '') + '\n\n' + (newText == null ? '' : String(newText)); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已向「' + p.name + '」追加设定'; }
+      if (mode === 'rename') { const on = p.name; p.name = (newText != null) ? String(newText) : (a.new_name || ''); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + on + '」已改名为「' + p.name + '」'; }
       if (mode === 'set_enabled') { p.enabled = a.enabled !== false; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + p.name + '」已' + (p.enabled ? '启用' : '停用'); }
-      if (mode === 'replace') { const rr = tryReplaceContent(p.content || '', a.old_text || '', a.content || ''); if (rr === null) return '未找到片段，请改用 mode="set_content" 整体重写'; p.content = rr; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已替换「' + p.name + '」中的片段'; }
+      if (mode === 'replace') { const ot = a.old_text || ''; if (!ot) return '❌ replace 需要 old_text（要替换的原始片段）'; const rr = tryReplaceContent(p.content || '', ot, newText == null ? '' : String(newText)); if (rr === null) return '未找到片段，请改用 mode="set_content" 整体重写'; p.content = rr; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已替换「' + p.name + '」中的片段'; }
       return '未知 mode：' + mode;
     }
     if (a.action === 'delete') {
       const p = findPlugin(a.target);
       if (!p) return '未找到插件：' + a.target;
-      plugins = plugins.filter(function (x) { return x.id !== p.id; });
+      // 安全闸门：文本协议删除同样只标记待删除，必须用户在界面点「确认删除」才真正移除
+      p.pendingDelete = true;
       savePlugins(); renderPlugins(); renderPlugBadge();
-      return '🗑 已删除插件「' + p.name + '」';
+      return '🗑 已申请删除插件「' + p.name + '」，但尚未真正移除——必须等用户在插件列表点「确认删除」才会删除。';
     }
     return '未知 action：' + a.action;
   } catch (e) { return '执行出错：' + e.message; }
@@ -1193,33 +1218,43 @@ async function executePluginTool(tc, el, box) {
       const p = findPlugin(args.target);
       if (!p) { resultText = JSON.stringify({ error: '没有找到匹配的插件：' + args.target }); }
       else {
+        // 容错：模型常用 content / old / new 当键名，这里全都认；undefined 与空串区分开
+        const newText = (args.new_text !== undefined) ? args.new_text
+                      : (args.content !== undefined ? args.content
+                      : (args.new !== undefined ? args.new : undefined));
+        const oldText = (args.old_text !== undefined) ? args.old_text
+                      : (args.old !== undefined ? args.old : '');
         const op = args.operation || '';
         let doneMsg = '';
         if (op === 'replace') {
-          const oldT = args.old_text || '';
-          const newT = (args.new_text === undefined || args.new_text === null) ? '' : args.new_text;
-          if (!oldT) { resultText = JSON.stringify({ error: 'operation=replace 需要提供 old_text' }); }
+          if (!oldText) { resultText = JSON.stringify({ error: 'operation=replace 需要提供 old_text（要被替换的原始片段）' }); }
           else {
-            const hit = tryReplaceContent(p.content || '', oldT, newT);
+            const hit = tryReplaceContent(p.content || '', oldText, newText == null ? '' : String(newText));
             if (hit === null) {
               resultText = JSON.stringify({
                 error: '正文中没找到该片段。请改用 operation="set_content" 并给出改写后的完整正文（这才是可靠做法），或先用 list_plugins 读全文复制原文。',
-                not_found: oldT.slice(0, 200),
+                not_found: String(oldText).slice(0, 200),
                 current_content: (p.content || '').slice(0, 6000),
               });
             } else {
               p.content = hit;
-              doneMsg = '✅ 已修改插件「' + p.name + '」：\n\n「' + oldT.slice(0, 80) + '」→「' + String(newT).slice(0, 80) + '」';
+              doneMsg = '✅ 已修改插件「' + p.name + '」：\n\n「' + String(oldText).slice(0, 80) + '」→「' + String(newText).slice(0, 80) + '」';
             }
           }
         } else if (op === 'set_content') {
-          p.content = args.new_text || '';
-          doneMsg = '✅ 已重写插件「' + p.name + '」的正文（' + p.content.length + ' 字）';
+          // 未提供正文时一律拒绝，绝不把插件内容清空成空（这是之前"改不了/内容丢失"的根因）
+          if (newText == null || String(newText).trim() === '') {
+            resultText = JSON.stringify({ error: 'operation=set_content 必须提供 new_text（或 content）作为完整新正文；未提供会导致内容被清空，本次修改已拒绝。' });
+          } else {
+            p.content = String(newText);
+            doneMsg = '✅ 已重写插件「' + p.name + '」的正文（' + p.content.length + ' 字）';
+          }
         } else if (op === 'append') {
-          p.content = (p.content || '') + '\n\n' + (args.new_text || '');
+          p.content = (p.content || '') + '\n\n' + (newText == null ? '' : String(newText));
           doneMsg = '✅ 已向插件「' + p.name + '」追加新设定';
         } else if (op === 'rename') {
-          const oldN = p.name; p.name = args.new_text || '';
+          const oldN = p.name;
+          p.name = (newText != null) ? String(newText) : (args.new_name || '');
           doneMsg = '✅ 插件已改名：「' + oldN + '」→「' + p.name + '」';
         } else if (op === 'set_enabled') {
           p.enabled = args.enabled !== false;
@@ -1238,12 +1273,14 @@ async function executePluginTool(tc, el, box) {
       const p = findPlugin(args.target);
       if (!p) { resultText = JSON.stringify({ error: '没有找到匹配的插件：' + args.target }); }
       else {
-        const oldN = p.name;
-        plugins = plugins.filter(function (x) { return x.id !== p.id; });
+        // 安全闸门：AI 无权擅自删除插件——只能先标记为「待删除」，必须用户在插件列表点「确认删除」才真正移除。
+        // 这样无论模型多"想"删，没有用户的界面点击就永远不会删掉插件。
+        p.pendingDelete = true;
         savePlugins(); renderPlugins(); renderPlugBadge();
-        resultText = JSON.stringify({ deleted: true, name: oldN });
+        resultText = JSON.stringify({ pending_delete: true, name: p.name,
+          note: '已提交删除申请，但尚未真正删除——必须等用户在插件列表点「确认删除」后才会移除。请告知用户去插件面板确认，不要重复发送删除指令。' });
         const bubble = el.querySelector('.bubble');
-        if (bubble) bubble.innerHTML = renderMD('🗑 已删除插件「' + oldN + '」');
+        if (bubble) bubble.innerHTML = renderMD('🗑 已申请删除插件「' + p.name + '」，已为你拦住误删——请在右侧「插件」列表点该插件的「确认删除」按钮后才会真正移除。');
       }
     } else {
       resultText = JSON.stringify({ error: '未知工具: ' + name });
