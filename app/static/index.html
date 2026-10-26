@@ -463,6 +463,9 @@ const DEV_TOOL_SYS = '【自主建站技能（务必遵守）】你可以帮用�
 '<<<DEV\naction=read_file\nrepo=owner/my-site\npath=index.html\nDEV>>>\n' +
 '<<<DEV\naction=publish\nrepo=owner/my-site\nname=my-site\ntype=static\nDEV>>>\n' +
 '<<<DEV\naction=deploy_status\nservice=srv-xxxx\nDEV>>>\n' +
+'<<<DEV\naction=delete_repo\nrepo=owner/my-site\nDEV>>>\n' +
+'<<<DEV\naction=delete_service\nservice=srv-xxxx\nDEV>>>\n' +
+'<<<DEV\naction=search_repos\nquery=个人博客\nmine=true\nDEV>>>\n' +
 '【可用动作】\n' +
 '· create_repo（建仓库；name 只能用小写字母/数字/-，默认公开；重名系统会自动加后缀）\n' +
 '· list_repos（列出用户全部仓库）\n' +
@@ -472,6 +475,9 @@ const DEV_TOOL_SYS = '【自主建站技能（务必遵守）】你可以帮用�
 '· delete_file（删文件，参数 repo/path）\n' +
 '· publish（发布到 Render；type=static 静态站[默认]：publish=. 且 build 留空；type=web 需填 build/start/runtime=node|python；name 为服务名，只能小写字母数字和-）\n' +
 '· deploy_status（查部署状态，参数 service=Render 服务 id）\n' +
+'· delete_repo（删除整个 GitHub 仓库，参数 repo=owner/name；删除不可恢复，确认要删再删，建议先 list_repos 确认名字）\n' +
+'· delete_service（删除 Render 站点/服务，参数 service=Render 服务 id，形如 srv-xxxx；会把线上网站一起删掉，不可恢复）\n' +
+'· search_repos（用你的 GitHub 令牌搜仓库；参数 query=关键词；mine=true 只搜你自己的仓库，省略则搜 GitHub 全站；返回 full_name/描述/stars/地址）\n' +
 '【标准流程】create_repo → write_file 写入全部文件 → read_file 逐个读回自检 → publish → deploy_status 确认 live，最后把真实网址给用户。\n' +
 '【手机端优先（默认规格）】默认就按手机浏览器尺寸设计：必须含 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">；响应式布局；可点区域不小于 44px；禁止横向滚动；桌面端可居中限宽。\n' +
 '【大文件分段写（防截断，极其重要）】你的单次输出有长度上限，一个完整页面经常写不完。规则：\n' +
@@ -761,7 +767,7 @@ function parseDevBlock(raw) {
     const j = JSON.parse(t2); if (j && (j.action || j.repo || j.path)) return j;
   } catch (e) {}
   // 3) 行协议：content= 之后到块尾都是多行文件内容（content 不进 KEYS，否则会被普通键分支提前吃掉）
-  const KEYS = 'action|repo|path|mode|message|name|description|type|build|publish|runtime|start|service|branch|private';
+  const KEYS = 'action|repo|path|mode|message|name|description|type|build|publish|runtime|start|service|branch|private|query|mine';
   const lines = t.split('\n');
   const obj = {};
   let ci = -1;
@@ -1024,7 +1030,40 @@ async function applyDevAction(a, log) {
       log('📡 当前状态：' + (status || '未知'));
       return '✅ 部署状态：' + (status || '未知') + (status === 'live' ? '（已上线）' : '（仍在部署，可稍后再查）');
     }
-    return '❌ 未知 action：' + act + '（可用：create_repo/list_repos/list_files/write_file/read_file/delete_file/publish/deploy_status）';
+    if (act === 'delete_repo') {
+      if (!repo || repo.indexOf('/') < 0) return '❌ delete_repo 缺少 repo（需 owner/name 格式）';
+      log('🗑 正在删除 GitHub 仓库 ' + repo + ' …（不可恢复）');
+      const j = await jpost('/api/gh/delete-repo', { token: gt, repo: repo });
+      if (!j.ok) return '❌ 删除仓库失败：' + (j.error || '');
+      log('✅ 已删除仓库 ' + repo);
+      return '✅ 已永久删除 GitHub 仓库：' + repo + '（含里面所有代码与历史，不可恢复）。如该仓库已发布到 Render，记得再用 delete_service 把线上站点一并删除。';
+    }
+    if (act === 'delete_service') {
+      if (!rk) return '❌ 未填写 Render API Key（请到设置⚙️里填写后再删除站点）';
+      const sid = (a.service || '').trim();
+      if (!sid) return '❌ delete_service 缺少 service（Render 服务 id，形如 srv-xxxx）';
+      log('🗑 正在删除 Render 站点 ' + sid + ' …（线上网站一并删除，不可恢复）');
+      const j = await jpost('/api/render/delete-service', { key: rk, service: sid });
+      if (!j.ok) return '❌ 删除站点失败：' + (j.error || '');
+      log('✅ 已删除 Render 站点 ' + sid);
+      return '✅ 已永久删除 Render 站点/服务：' + sid + '（线上网站已停止并移除，不可恢复）。仓库仍在 GitHub 上，如需连仓库一起删请用 delete_repo。';
+    }
+    if (act === 'search_repos') {
+      const q = (a.query || '').trim();
+      if (!q) return '❌ search_repos 缺少 query（搜索关键词）';
+      const mine = a.mine === true || a.mine === 'true' || String(a.mine).toLowerCase() === 'true';
+      log('🔎 正在用你的 GitHub 令牌搜索仓库：' + q + (mine ? '（仅搜我自己的）' : '（搜全站）') + ' …');
+      const j = await jpost('/api/gh/search', { token: gt, query: q, mine: mine });
+      if (!j.ok) return '❌ 搜索失败：' + (j.error || '');
+      log('✅ 搜到 ' + j.count + ' 个仓库');
+      if (!j.repos || !j.repos.length) return '✅ 未找到与「' + q + '」相关的仓库' + (mine ? '（仅搜了你自己的仓库）' : '（搜了 GitHub 全站）') + '。';
+      return '✅ 搜索结果（' + j.count + ' 个' + (mine ? '，仅你的仓库' : '，GitHub 全站') + '）：\n' +
+        (j.repos || []).map(function (x) {
+          return '- ' + x.name + '（★' + (x.stars || 0) + (x.lang ? '，' + x.lang : '') + '）' + (x.private ? ' [私有]' : '') +
+            (x.desc ? '：' + x.desc : '') + (x.url ? '  ' + x.url : '');
+        }).join('\n');
+    }
+    return '❌ 未知 action：' + act + '（可用：create_repo/list_repos/list_files/write_file/read_file/delete_file/publish/deploy_status/delete_repo/delete_service/search_repos）';
   } catch (e) {
     return '❌ 执行出错：' + e.message;
   }
