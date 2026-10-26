@@ -463,7 +463,8 @@ const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个�
 '2) 最可靠的改法是 mode=set_content：把原文改好后输出完整新正文。可先 action=list 拿到全文。\n' +
 '3) 只想加规则用 mode=append；改名字用 rename；开关用 set_enabled。避免用 replace（容易匹配失败）。\n' +
 '【新建插件】用户要一个新插件时，用 action=create，正文由你亲自完整撰写，不要让用户自己写。\n' +
-'【禁止】不要输出任何 shell 命令，不要假装运行程序，不要说"我无法修改"。你完全可以修改——用指令块。';
+'【禁止】不要输出任何 shell 命令，不要假装运行程序，不要说"我无法修改"。你完全可以修改——用指令块。\n' +
+'【防假更新铁律】修改插件必须真实写入，绝不允许只在文字里声称"已添加到插件/已修改成功"。每次 update 后工具会回传 content_preview（插件真实已保存内容），你必须对照它确认新增设定确实已落地；若工具返回 error（replace 未命中、set_content 缺内容、找不到插件），必须如实告知用户"修改失败"，禁止谎称"已添加"。只有看到 updated:true 且内容命中，才算真的改成功——若你根本没有调用更新工具，就绝不能说"已修改"。';
 
 const IMG_TOOL_SYS = '【生图技能（务必遵守）】你可以调用生图模型为用户绘制图片。当用户想让你画图/生成图片时（如"画一张…""生成…的图""来张壁纸/头像/插画/海报""帮我设计…"等），你必须输出生图指令块，前端会真实调用生图模型并把图片直接展示给用户。\n' +
 '【指令格式（行协议）】prompt 必须单独写在一行，不要换行：\n' +
@@ -1110,15 +1111,23 @@ function applyPluginAction(a) {
       const p = findPlugin(a.target);
       if (!p) return '未找到插件：' + a.target;
       const mode = a.mode || 'set_content';
-      const newText = (a.content !== undefined) ? a.content : a.new_text;
+      const newText = (a.content !== undefined) ? a.content
+                    : (a.new_text !== undefined ? a.new_text
+                    : (a.new !== undefined ? a.new : undefined));
+      // 真实落地证据：任何成功修改都附带当前已保存的真实内容预览，防止"口头假更新"（AI 声称加了实际没写进去）
+      const ok = (msg) => {
+        savePlugins(); renderPlugins(); renderPlugBadge();
+        const rc = p.content || '';
+        return msg + '（已真实保存到插件，共 ' + rc.length + ' 字）\n\n📦 当前已保存的真实内容预览（前 500 字）：\n> ' + rc.slice(0, 500).replace(/\n/g, '\n> ');
+      };
       if (mode === 'set_content') {
         if (newText == null || String(newText).trim() === '') return '❌ 未提供 content（set_content 需要完整新正文），已拒绝以免清空插件。请用 content= 给出改好的完整正文。';
-        p.content = String(newText); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已重写「' + p.name + '」正文（' + p.content.length + ' 字）';
+        p.content = String(newText); return ok('✅ 已重写「' + p.name + '」正文');
       }
-      if (mode === 'append') { p.content = (p.content || '') + '\n\n' + (newText == null ? '' : String(newText)); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已向「' + p.name + '」追加设定'; }
-      if (mode === 'rename') { const on = p.name; p.name = (newText != null) ? String(newText) : (a.new_name || ''); savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + on + '」已改名为「' + p.name + '」'; }
-      if (mode === 'set_enabled') { p.enabled = a.enabled !== false; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 「' + p.name + '」已' + (p.enabled ? '启用' : '停用'); }
-      if (mode === 'replace') { const ot = a.old_text || ''; if (!ot) return '❌ replace 需要 old_text（要替换的原始片段）'; const rr = tryReplaceContent(p.content || '', ot, newText == null ? '' : String(newText)); if (rr === null) return '未找到片段，请改用 mode="set_content" 整体重写'; p.content = rr; savePlugins(); renderPlugins(); renderPlugBadge(); return '✅ 已替换「' + p.name + '」中的片段'; }
+      if (mode === 'append') { p.content = (p.content || '') + '\n\n' + (newText == null ? '' : String(newText)); return ok('✅ 已向「' + p.name + '」追加设定'); }
+      if (mode === 'rename') { const on = p.name; p.name = (newText != null) ? String(newText) : (a.new_name || ''); return ok('✅ 「' + on + '」已改名为「' + p.name + '」'); }
+      if (mode === 'set_enabled') { p.enabled = a.enabled !== false; return ok('✅ 「' + p.name + '」已' + (p.enabled ? '启用' : '停用')); }
+      if (mode === 'replace') { const ot = a.old_text || ''; if (!ot) return '❌ replace 需要 old_text（要替换的原始片段）'; const rr = tryReplaceContent(p.content || '', ot, newText == null ? '' : String(newText)); if (rr === null) return '❌ 未找到片段，请改用 mode="set_content" 整体重写（这是最可靠的做法）'; p.content = rr; return ok('✅ 已替换「' + p.name + '」中的片段'); }
       return '未知 mode：' + mode;
     }
     if (a.action === 'delete') {
@@ -1264,9 +1273,31 @@ async function executePluginTool(tc, el, box) {
         }
         if (doneMsg) {
           savePlugins(); renderPlugins(); renderPlugBadge();
-          resultText = JSON.stringify({ updated: true, name: p.name, enabled: !!p.enabled, content_length: (p.content || '').length });
+          // 真实落地证据：把当前插件真实内容回传给 AI，防止它"口头假更新"（声称加了实际没写进去）
+          const realContent = p.content || '';
+          let addedDetected = null;
+          if (op === 'set_content' || op === 'append' || op === 'replace') {
+            const sample = String(newText || '');
+            addedDetected = sample.length >= 4 ? (realContent.indexOf(sample) >= 0) : true;
+          }
+          resultText = JSON.stringify({
+            updated: true,
+            verified: true,            // 此修改已真实写入插件存储（切勿仅在文字里声称"已添加"）
+            name: p.name,
+            enabled: !!p.enabled,
+            content_length: realContent.length,
+            content_preview: realContent.slice(0, 600),   // 真实落地内容（前 600 字），请据此核对到底加没加进去
+            added_detected: addedDetected,
+            note: '修改已真实保存到插件存储。若你本次想新增某条设定，请对照 content_preview 确认它确实已在其中；没有 confirmed 不得声称"已添加/已修改成功"。'
+          }, null, 2);
           const bubble = el.querySelector('.bubble');
-          if (bubble) bubble.innerHTML = renderMD(doneMsg + '\n\n（下次发送时生效）');
+          if (bubble) {
+            const preview = realContent.slice(0, 800).replace(/\n/g, '\n> ');
+            bubble.innerHTML = renderMD(
+              doneMsg + '\n\n（已真实保存，下次发送时生效）' +
+              '\n\n📦 **插件「' + p.name + '」当前已保存的真实内容**（共 ' + realContent.length + ' 字）：\n> ' + preview
+            );
+          }
         }
       }
     } else if (name === 'delete_plugin') {
