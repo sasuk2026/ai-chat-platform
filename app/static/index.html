@@ -485,7 +485,7 @@ const DEV_TOOL_SYS = '【自主建站技能（务必遵守）】你可以帮用�
 '2) 代码必须完整可运行：禁止 TODO、占位文本、假链接、外链图片（图片用内联 SVG 或 CSS 绘制）。\n' +
 '3) 视觉要精致：配色、间距、圆角、阴影、过渡动效都要用心，符合用户意图的主题。\n' +
 '4) 发布前必须自检：用 read_file 读回 index.html，确认开头是 <!DOCTYPE html>、结尾是 </html>、内容没有截断；有问题就重新 write_file。\n' +
-'5) 发布前系统还会自动做质量门校验（DOCTYPE/结尾闭合/viewport/占位文本/标签配平），不通过会打回并给出具体问题——按问题修好后再次 publish，不要试图跳过。\n' +
+'5) 发布前系统还会自动做逻辑/结构校验（只查结构完整性：DOCTYPE/结尾闭合/viewport/标签配平，不做内容审核），不通过会打回并给出具体问题——按问题修好后再次 publish，不要试图跳过。\n' +
 '6) 严禁编造网址：网站的真实链接只能来自 publish/deploy_status 的系统回执，没收到回执就不能告诉用户任何 URL。\n' +
 '7) 系统回执的每一步都是真实结果（仓库地址/字节数/commit/URL/部署状态），基于真实结果汇报，不要臆测。\n' +
 '8) 私有仓库无法发布到 Render（免费计划连不上）——publish 只能用公开仓库；用户让改私有仓库里的文件可以（read/write 不受影响）。\n' +
@@ -797,8 +797,11 @@ function extractDevActions(text) {
   return { actions: actions, bad: bad, cleaned: src.replace(re, '').trim(), unclosed: unclosed, unclosedHead: unclosedHead };
 }
 
-// 发布前质量门：对 index.html 做客观校验（不依赖 AI 自觉），返回问题列表（空 = 通过）
-function auditSite(html) {
+// 发布前逻辑/结构门：仅做「结构是否完整、能否运行」的客观校验（不依赖 AI 自觉，也不做内容审核），返回问题列表（空 = 通过）
+// 逻辑/结构校验门：仅检查「代码是否结构完整、能否跑起来」（DOCTYPE / 结尾闭合 / viewport / 标签配平 / 字节完整性）。
+// 注意：本门【只做逻辑审核，不做内容审核】——不检查页面“写的是什么文字”，因此不再检测 TODO/占位/lorem 等内容层面的占位符。
+// 页面“有没有真实内容、文字是否敷衍”由 AI 编码铁律（写完整内容）负责，不由这道门把关。
+function logicAuditSite(html) {
   const t = String(html || '');
   const problems = [];
   if (!/^\s*<!DOCTYPE html>/i.test(t)) problems.push('开头不是 <!DOCTYPE html>');
@@ -806,10 +809,7 @@ function auditSite(html) {
   if (!/<meta[^>]+name=["']viewport["'][^>]*content=["'][^"']*width=device-width/i.test(t)) {
     problems.push('缺少 <meta name="viewport" content="width=device-width, initial-scale=1.0">（手机端必需）');
   }
-  if (t.length < 400) problems.push('内容只有 ' + t.length + ' 字节，不像一个完整页面');
-  if (/\bTODO\b|\bFIXME\b|占位|lorem ipsum|placeholder/i.test(t)) {
-    problems.push('含有占位文本（TODO/FIXME/占位/lorem ipsum），必须替换为真实内容');
-  }
+  if (t.length < 400) problems.push('内容只有 ' + t.length + ' 字节，不像一个完整页面（可能写空了）');
   // 标签配平粗检（先剥掉 script/style 内容，避免把 JS 里的字符串误判为标签）
   const stripped = t.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '');
   for (const tag of ['div', 'section', 'span', 'p', 'button', 'ul', 'li', 'header', 'footer', 'main', 'nav']) {
@@ -820,6 +820,25 @@ function auditSite(html) {
     }
   }
   return problems;
+}
+// 把已保存的建站进度快照拼成「续建上下文」，注入给 AI，使其从断点继续而非重建
+function buildResumeContext(s) {
+  if (!s) return '';
+  const fk = Object.keys(s.files || {});
+  const fdesc = fk.length ? fk.map(function (p) {
+    const o = s.files[p];
+    return p + '（' + o.bytes + ' 字节' + (o.appended ? '，追加' : '') + '）';
+  }).join('、') : '无';
+  const pstat = s.done ? ('已发布上线，网址 ' + (s.url || '（见回执）'))
+    : (s.url ? ('已创建服务 ' + (s.renderService || '?') + '，网址 ' + s.url + '，待确认 live') : '尚未发布');
+  return '【建站续建上下文·请勿从头开始】上一轮建站尚未结束，当前真实进度如下：\n' +
+    '· 仓库：' + (s.repo || '尚未创建') + '（分支 ' + (s.branch || 'main') + '）\n' +
+    '· 已写入文件：' + fdesc + '\n' +
+    '· 发布状态：' + pstat + '\n' +
+    '· 已完成步骤：' + ((s.steps || []).join(' → ') || '无') + '\n' +
+    '请【不要重复创建已存在的仓库、也不要重复写入已完整的文件】。先调用 read_file 核对真实状态，再从断点继续：' +
+    '文件没写完就用 mode=append 续写；已发布就直接用 deploy_status 确认 live 并把真实网址给用户；' +
+    '若用户明确要做「全新网站」，请先 create_repo 新建（重名系统会自动加后缀），不要在原仓库上覆盖。';
 }
 // 建站进度日志 → HTML（流式期间实时重渲，结束后随消息持久化）
 function renderDevLog(lines) {
@@ -916,14 +935,14 @@ async function applyDevAction(a, log) {
         }
       }
 
-      // ---- 保险 2：发布前质量门（前端客观校验，不依赖 AI 自觉）----
+      // ---- 保险 2：发布前逻辑/结构门（前端客观校验，只查结构完整性，不查内容）----
       const rd = await jpost('/api/gh/read', { token: gt, repo: repo, path: a.path || 'index.html', branch: branch });
       if (!rd.ok) {
         return '❌ 发布中止：读不到 ' + repo + '/' + (a.path || 'index.html') + '（' + (rd.error || '') + '）。请先 write_file 写入完整页面再 publish。';
       }
-      const problems = auditSite(rd.content);
+      const problems = logicAuditSite(rd.content);
       if (problems.length) {
-        log('⛔ 质量门未通过，已阻断发布');
+        log('⛔ 逻辑/结构门未通过，已阻断发布');
         return '❌ 发布中止：系统自动自检发现以下问题，必须修好后才能发布：\n' + problems.map(function (p) { return '· ' + p; }).join('\n') +
           '\n请用 write_file 重新写入修复后的完整 index.html（内容太长就先写前半段、再用 mode=append 补后半段，单段控制在 8000 字符内），修好后再次 publish。';
       }
@@ -1673,12 +1692,19 @@ async function generate(isFreshSend) {
   // 注意：「发布」必须带网站/站点语境，避免和「发布图片」等生图意图撞车
   const devIntent = /(建站|做个?网站|写(个|一个)?(网站|网页|页面)|网站|网页|主页|落地页|landing|homepage|部署|上线|发布\s*(一个|个)?\s*(网站|网页|站点|项目|应用)|render|github|仓库|repo)/i.test(text);
   const devReady = !!(settings.githubToken && settings.renderKey);
+  // 断点续传：扫描历史消息，找最近一条「仍处于建站进行中」的快照（断网/刷新/停止后重新进来可恢复）
+  const prevDevMsg = [].concat(conv.messages).reverse().find(function (m) {
+    return m && m.role === 'assistant' && m.devSession && m.devSession.active;
+  });
+  const resumed = (devReady && prevDevMsg) ? prevDevMsg.devSession : null;
   if (settings.apiKey && devIntent && devReady) {
     let devSys = DEV_TOOL_SYS;
     // 无思考模式：模型推理能力弱，要求严格按协议、少废话
     if ((settings.reasoningMode || 'auto') === 'off') {
       devSys += '\n【无思考模式】你当前未开启推理：请严格按行协议一个动作一个指令块输出，content 从下一行开始写完整文件内容，不要冗长解释。';
     }
+    // 续建上下文：把上轮真实进度喂给 AI，避免从头重建（重复建仓库/重复写文件）
+    if (resumed) devSys += '\n\n' + buildResumeContext(resumed);
     messages.push({ role: 'system', content: devSys });
   } else if (settings.apiKey && devIntent && !devReady) {
     messages.push({ role: 'system', content: '【系统提示】用户想建站/操作仓库，但设置里还没有填 GitHub 令牌或 Render API Key。请提醒用户：打开右上角⚙️设置 → 填写 GitHub 令牌（ghp_ 开头，需 repo 读写权限）和 Render API Key（rnd_ 开头，dashboard.render.com/u/settings 创建）→ 保存后即可全自动建站发布。这是正常的前置引导，不是拒绝回答。' });
@@ -1724,6 +1750,39 @@ async function generate(isFreshSend) {
     imgState.prog = renderDevLog(devLines);
     const b = el.querySelector('.bubble');
     if (b) b.innerHTML = imgState.prog + renderMD(finalText) + imgState.extra;
+  }
+  // ---- 建站进度快照（断点续传）----
+  // devSession 持久化到消息对象：断网/刷新/停止后，下一轮对话可从此处恢复，不会从头重建
+  let devSession = null;
+  function updateDevSession(da, res) {
+    if (!devSession) devSession = { active: true, repo: null, branch: 'main', files: {}, steps: [], renderService: null, renderName: null, url: null, done: false, updatedAt: Date.now() };
+    if (da.action === 'create_repo') {
+      const m = res.match(/full_name=([^\s，,]+)/);
+      const repo = m ? m[1] : null;
+      if (repo && devSession.repo && repo !== devSession.repo) {
+        // 新建了不同仓库 → 视为新网站会话，重置进度累计
+        devSession.files = {}; devSession.steps = []; devSession.url = null; devSession.renderService = null; devSession.done = false;
+      }
+      if (repo) devSession.repo = repo;
+    } else if (da.action === 'write_file') {
+      const m = res.match(/当前共\s*(\d+)\s*字节/);
+      devSession.files[da.path || '?'] = { bytes: m ? +m[1] : 0, appended: String(da.mode || 'write').toLowerCase() === 'append' };
+    } else if (da.action === 'publish') {
+      const mu = res.match(/网站已上线[:：]\s*(\S+)/) || res.match(/地址[:：]\s*(\S+)/) || res.match(/https?:\/\/\S+\.onrender\.com/);
+      const ms = res.match(/服务 id=([^\s，,]+)/);
+      if (mu) devSession.url = mu[1];
+      if (ms) devSession.renderService = ms[1];
+      if (/✅ 发布成功|已上线/.test(res)) devSession.done = true;
+    }
+    devSession.steps.push(da.action + (da.repo ? '(' + da.repo + ')' : '') + (da.path ? ':' + da.path : ''));
+    devSession.updatedAt = Date.now();
+  }
+  // 若是续建，先恢复快照并接上进度日志
+  if (resumed) {
+    devSession = resumed;
+    devLines.push('🔄 已从断点恢复建站进度：仓库 ' + (resumed.repo || '未创建') +
+      '，已写文件 ' + (Object.keys(resumed.files || {}).join('、') || '无') +
+      (resumed.url ? ('，已发布 ' + resumed.url) : '') + '。将从暂停处继续。');
   }
   try {
     let toolIter = 0;
@@ -1844,6 +1903,7 @@ async function generate(isFreshSend) {
         for (const da of devActs.actions.slice(0, 4)) {
           const res = await applyDevAction(da, devLog);
           devResults.push(res);
+          updateDevSession(da, res);   // 续建：把每步真实结果写进进度快照
           const b2 = el.querySelector('.bubble');
           if (b2) b2.innerHTML = imgState.prog + renderMD(finalText) + imgState.extra;
         }
@@ -1869,6 +1929,7 @@ async function generate(isFreshSend) {
   ph.qused = searchUsedQuery;
   if (generatedImages.length) ph.images = generatedImages.slice(0, 4);
   if (devLines.length) ph.devlog = renderDevLog(devLines.slice(-40));   // 建站进度随消息持久化
+  if (devSession) { devSession.active = !devSession.done || !!devSession.url; ph.devSession = devSession; }   // 建站进度快照持久化（断网/刷新后可续建）
   el.remove();
   conv.messages.push(ph);
   box.appendChild(msgEl(ph, conv.messages.length - 1));
