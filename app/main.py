@@ -221,12 +221,21 @@ async def gh_create_repo(request: Request):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
             r = await client.post(GH_API + "/user/repos", json=payload, headers=_gh_headers(token))
+            # 422 = 仓库名已被占用：自动加随机后缀重试一次（不把麻烦扔给用户/AI）
+            if r.status_code == 422 and "already exists" in (r.text or "").lower():
+                import secrets as _secrets
+                payload["name"] = f"{name[:80]}-{_secrets.token_hex(3)}"
+                payload["description"] = (body.get("description") or "由 AI 聊天平台自动创建")[:200]
+                r = await client.post(GH_API + "/user/repos", json=payload, headers=_gh_headers(token))
             if r.status_code >= 300:
                 return JSONResponse({"ok": False, "error": f"GitHub HTTP {r.status_code}: {r.text[:200]}"})
             it = r.json()
+            renamed = it.get("name") != name
             return JSONResponse({"ok": True, "repo": it.get("full_name"),
                                  "branch": it.get("default_branch") or "main",
-                                 "url": it.get("html_url"), "private": bool(it.get("private"))})
+                                 "url": it.get("html_url"), "private": bool(it.get("private")),
+                                 "renamed": renamed,
+                                 "note": ("原名已被占用，已自动改名为 " + it.get("name")) if renamed else ""})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:300]})
 
@@ -289,13 +298,18 @@ async def gh_read(request: Request):
 
 @app.post("/api/gh/write")
 async def gh_write(request: Request):
-    """写入（创建或更新）仓库文件；content 为完整文件内容（自动 base64）。"""
+    """写入（创建或更新）仓库文件；content 为完整文件内容（自动 base64）。
+
+    mode=append：追加写（先读现有内容，拼接后整体提交）——用于大文件分段写入，
+    避免模型单次输出被 max_tokens 截断导致文件残缺。文件不存在时等同创建。
+    """
     body = await request.json()
     token = (body.get("token") or "").strip()
     repo = (body.get("repo") or "").strip()
     path = (body.get("path") or "").strip().lstrip("/")
     branch = (body.get("branch") or "main").strip() or "main"
     content = body.get("content")
+    mode = (body.get("mode") or "write").strip().lower()
     if not token:
         return JSONResponse({"ok": False, "error": "未提供 GitHub 令牌"})
     if not repo or "/" not in repo or not path:
@@ -303,10 +317,31 @@ async def gh_write(request: Request):
     if content is None:
         return JSONResponse({"ok": False, "error": "content 不能为空"})
     import base64 as _b64
+    cur_sha = body.get("sha")
+    appended = False
+    if mode == "append":
+        # 追加模式：先读回现有全文，拼上本次片段后整体提交
+        async with httpx.AsyncClient(timeout=25) as client:
+            cur = await client.get(f"{GH_API}/repos/{repo}/contents/{path}",
+                                   params={"ref": branch}, headers=_gh_headers(token))
+        if cur.status_code == 200:
+            data = cur.json() or {}
+            raw = (data.get("content") or "").replace("\n", "")
+            try:
+                existing = _b64.b64decode(raw).decode("utf-8", errors="replace")
+            except Exception:
+                existing = ""
+            content = existing + "\n" + str(content)
+            cur_sha = data.get("sha")
+            appended = True
+        elif cur.status_code != 404:
+            return JSONResponse({"ok": False, "error": f"追加写读取现有文件失败（HTTP {cur.status_code}）"})
+        # 404 → 文件不存在，退化为创建
     b64 = _b64.b64encode(str(content).encode("utf-8")).decode()
 
     async def _put(sha=None):
-        payload = {"message": body.get("message") or f"chore: 更新 {path}（AI 聊天平台）",
+        payload = {"message": body.get("message") or
+                   (f"chore: 追加 {path}（AI 聊天平台）" if appended else f"chore: 更新 {path}（AI 聊天平台）"),
                    "content": b64, "branch": branch}
         if sha:
             payload["sha"] = sha
@@ -315,9 +350,9 @@ async def gh_write(request: Request):
 
     try:
         async with httpx.AsyncClient(timeout=40) as client:
-            r = await _put(body.get("sha"))
+            r = await _put(cur_sha)
             # 409 = 文件已存在但没有带 sha：取当前 sha 后重试
-            if r.status_code == 409 and not body.get("sha"):
+            if r.status_code == 409 and not cur_sha:
                 cur = await client.get(f"{GH_API}/repos/{repo}/contents/{path}",
                                        params={"ref": branch}, headers=_gh_headers(token))
                 if cur.status_code == 200:
@@ -328,6 +363,7 @@ async def gh_write(request: Request):
             commit = (data.get("commit") or {})
             return JSONResponse({"ok": True, "repo": repo, "path": path,
                                  "bytes": len(str(content).encode("utf-8")),
+                                 "appended": appended,
                                  "sha": data.get("content", {}).get("sha") if isinstance(data.get("content"), dict) else None,
                                  "commit": (commit.get("sha") or "")[:10],
                                  "commit_url": commit.get("html_url")})
@@ -538,6 +574,31 @@ async def render_trigger(request: Request):
             d = r.json() or {}
             dp = (d.get("deploy") if isinstance(d, dict) else None) or d
             return JSONResponse({"ok": True, "deploy_id": dp.get("id"), "status": dp.get("status")})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+
+@app.post("/api/render/warm")
+async def render_warm(request: Request):
+    """预热/验证网站：服务端真实请求一次 URL，返回 HTTP 状态。
+
+    Render 免费服务 15 分钟无活动会休眠，首次访问要几十秒冷启动；
+    部署 live 后主动预热一次，既验证网站真的能打开，也让用户首访不等。
+    """
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url.startswith("http"):
+        return JSONResponse({"ok": False, "error": "需要合法的网站 URL（http/https）"})
+    try:
+        import time as _time
+        t0 = _time.monotonic()
+        async with httpx.AsyncClient(timeout=50, follow_redirects=True) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"})
+        ms = int((_time.monotonic() - t0) * 1000)
+        ct = (r.headers.get("content-type") or "")[:60]
+        return JSONResponse({"ok": r.status_code < 400, "status": r.status_code,
+                             "ms": ms, "content_type": ct,
+                             "note": "网站可正常访问" if r.status_code < 400 else "网站返回错误状态"})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:300]})
 
