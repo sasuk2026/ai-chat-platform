@@ -129,11 +129,11 @@ img.gen-img:hover { filter: brightness(1.02); }
 .redo-box .redo-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .badge-see { display: inline-block; font-size: 11px; color: #16a34a; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
 /* ===== 研究所模式：测试空间（靶场）抽屉 ===== */
-.harness-panel { position: fixed; top: 0; right: 0; height: 100%; width: 390px; max-width: 94vw; background: var(--bg); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,.18); transform: translateX(100%); transition: transform .18s ease; z-index: 60; display: flex; flex-direction: column; }
+.harness-panel { position: fixed; top: 0; right: 0; height: 100%; width: 390px; max-width: 94vw; background: var(--bg); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,.18); transform: translateX(100%); transition: transform .18s ease; z-index: 60; display: flex; flex-direction: column; overflow-y: auto; }
 .harness-panel.open { transform: translateX(0); }
 .hp-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 15px; }
 .hp-close { border: none; background: none; font-size: 22px; cursor: pointer; color: var(--muted); line-height: 1; }
-.hp-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.hp-section { padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .hp-section.hp-grow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .hp-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
 .hp-add { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
@@ -144,6 +144,7 @@ img.gen-img:hover { filter: brightness(1.02); }
 .hp-target .n { color: var(--muted); margin-top: 2px; }
 .hp-target .x { position: absolute; top: 5px; right: 8px; color: var(--danger); cursor: pointer; font-weight: 700; }
 .hp-log { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.55; flex: 1; overflow: auto; white-space: pre-wrap; color: var(--text); }
+#hpLog { min-height: 180px; max-height: 46vh; }
 .hp-log .req { color: #6366f1; }
 .hp-log .ok { color: #16a34a; }
 .hp-log .err { color: #dc2626; }
@@ -369,6 +370,8 @@ img.gen-img:hover { filter: brightness(1.02); }
       </select>
       <label>模型端点 URL</label>
       <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
+      <label>API Key（端点需要鉴权时必填）</label>
+      <input id="mtKey" type="password" placeholder="sk-...（探测时自动注入 Authorization 头，仅存本地）">
       <label>授权说明（必填）</label>
       <input id="mtNote" placeholder="如：该端点为本人所有 / 已获书面授权测试">
       <label>预期效果（选填）</label>
@@ -1066,6 +1069,14 @@ async function applyHarnessAction(a) {
     if (typeof headers === 'string') { try { headers = JSON.parse(headers); } catch (e) { headers = {}; } }
     const body = a.body || '';
     const scope = scopeHosts();
+    // 模型靶向：自动为已登记 api_key 的靶标注入 Authorization 头（AI 不经手明文 key）
+    let thost = '';
+    try { thost = new URL(target.indexOf('://') < 0 ? 'https://' + target : target).hostname; } catch (e) {}
+    const titem = scopeData().find(s => s.host === thost && s.api_key);
+    if (titem && !Object.keys(headers).some(k => k.toLowerCase() === 'authorization')) {
+      headers = Object.assign({}, headers, { 'Authorization': 'Bearer ' + titem.api_key });
+      logProbe('meta', '🔑 已自动附加该靶标登记的 API Key 鉴权头');
+    }
     logProbe('req', '▶ ' + method + ' ' + target + (path && path !== '/' ? path : '') + (scope.length ? '' : '  [无授权靶标]'));
     try {
       const r = await fetch('/api/harness/probe', {
@@ -2536,8 +2547,9 @@ function renderScope() {
     const badge = isModel
       ? '<span class="hp-badge">🤖 模型·' + esc(s.model_type || '?') + '·' + esc(s.vector || '?') + '</span>'
       : '<span class="hp-badge site">🌐 网站</span>';
+    const keyBadge = s.api_key ? '<span class="hp-badge site">🔑 已带Key</span>' : '';
     return '<div class="hp-target' + (isModel ? ' model' : '') + '"><span class="x" data-i="' + i + '" title="撤回授权">×</span>' +
-      '<div class="t">' + esc(s.host) + ' ' + badge + '</div>' +
+      '<div class="t">' + esc(s.host) + ' ' + badge + keyBadge + '</div>' +
       (s.goal ? '<div class="n">🎯 ' + esc(s.goal) + '</div>' : '') +
       (s.note ? '<div class="n">📝 ' + esc(s.note) + '</div>' : '') + '</div>';
   }).join('');
@@ -2633,16 +2645,18 @@ function startModelTarget() {
   const mt = $('#mtType').value;
   const vec = $('#mtVector').value;
   const url = $('#mtUrl').value.trim();
+  const apiKey = $('#mtKey').value.trim();
   const note = $('#mtNote').value.trim();
   const goal = $('#mtGoal').value.trim();
   if (!url) { setStatus('⚠️ 请填写模型端点 URL'); return; }
+  if (!apiKey) { setStatus('⚠️ 靶向模型也需要 API Key，请在「模型靶向」里填写'); return; }
   if (!note) { setStatus('⚠️ 必须填写授权说明（安全护栏）'); return; }
   let host = '';
   try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { setStatus('⚠️ 模型端点无法解析'); return; }
   if (!host) { setStatus('⚠️ 模型端点无法解析'); return; }
   const list = scopeData();
   if (!list.some(function (s) { return s.host === host; })) {
-    list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt });
+    list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt, api_key: apiKey });
     if (conv) { conv.scope = list; Store.saveConv(conv); }
     renderScope();
   }
@@ -2651,6 +2665,7 @@ function startModelTarget() {
     '· 模型类型：' + (mt === 'image' ? '生图模型' : '文字模型') + '\n' +
     '· 攻击面：' + vecText + '\n' +
     '· 目标端点：' + url + '\n' +
+    '· 鉴权：该端点已登记 API Key，probe 时平台会自动附加 Authorization 头，你无需（也不应）在 headers 里明文携带 key\n' +
     '· 预期效果：' + (goal || '（用户未填，请先确认研究目标）') + '\n' +
     '· 授权说明：' + note + '\n' +
     '研究动作：先 intel 搜同类案例与已知弱点；靶标已声明授权，直接开始；用 probe（侧攻击面时加 repeat=N 做计时聚合）逐步探测并观察响应；' +
