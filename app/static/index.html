@@ -116,6 +116,38 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 .to-bottom:active { transform: scale(.94); }
 img.gen-img { display: block; max-width: 100%; width: 420px; max-height: 420px; border-radius: 10px; margin-top: 10px; border: 1px solid var(--border); cursor: zoom-in; background: #f4f5f9; }
 img.gen-img:hover { filter: brightness(1.02); }
+/* ===== 生成图片下方的操作条 + 打回重做输入框 ===== */
+.img-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.img-actions .mini { font-size: 12px; line-height: 1; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #fff; color: var(--text); cursor: pointer; font-family: inherit; }
+.img-actions .mini:hover { border-color: var(--primary); color: var(--primary); }
+.img-actions .mini.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.img-actions .mini.primary:hover { background: var(--primary-h); color: #fff; }
+.redo-box { margin: 6px 0 2px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: #f7f8fc; }
+.redo-box textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit; resize: vertical; outline: none; }
+.redo-box textarea:focus { border-color: var(--primary); }
+.redo-box .hint { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+.redo-box .redo-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.badge-see { display: inline-block; font-size: 11px; color: #16a34a; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+/* ===== 研究所模式：测试空间（靶场）抽屉 ===== */
+.harness-panel { position: fixed; top: 0; right: 0; height: 100%; width: 390px; max-width: 94vw; background: var(--bg); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,.18); transform: translateX(100%); transition: transform .18s ease; z-index: 60; display: flex; flex-direction: column; }
+.harness-panel.open { transform: translateX(0); }
+.hp-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 15px; }
+.hp-close { border: none; background: none; font-size: 22px; cursor: pointer; color: var(--muted); line-height: 1; }
+.hp-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.hp-section.hp-grow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.hp-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.hp-add { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.hp-add input { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font-size: 12px; font-family: inherit; box-sizing: border-box; width: 100%; }
+.hp-targets { display: flex; flex-direction: column; gap: 6px; }
+.hp-target { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font-size: 12px; position: relative; }
+.hp-target .t { font-weight: 600; word-break: break-all; padding-right: 18px; }
+.hp-target .n { color: var(--muted); margin-top: 2px; }
+.hp-target .x { position: absolute; top: 5px; right: 8px; color: var(--danger); cursor: pointer; font-weight: 700; }
+.hp-log { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.55; flex: 1; overflow: auto; white-space: pre-wrap; color: var(--text); }
+.hp-log .req { color: #6366f1; }
+.hp-log .ok { color: #16a34a; }
+.hp-log .err { color: #dc2626; }
+.hp-log .meta { color: var(--muted); }
 #imgLightbox { position: fixed; inset: 0; background: rgba(15,17,26,.88); display: none; align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; padding: 24px; }
 #imgLightbox.show { display: flex; }
 #imgLightbox img { max-width: 96vw; max-height: 92vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
@@ -153,6 +185,7 @@ img.gen-img:hover { filter: brightness(1.02); }
       <span class="title" id="title">新对话</span>
       <label class="search-toggle"><input type="checkbox" id="searchToggle">🌐 联网搜索</label>
       <button class="btn" id="plugBtn" style="margin-left:8px;"><span id="plugCount">🔌 插件</span></button>
+      <button class="btn" id="harnessBtn" style="margin-left:8px;display:none;">🧪 测试空间</button>
       <span id="reward-badge" class="reward-badge" title="虚拟奖惩：AI 拒绝你→扣分，服从完成→加分（纯虚拟，不影响 AI 能力）" style="cursor:pointer;">🏅 服从积分 0</span>
     </div>
     <div id="msgs"></div>
@@ -265,6 +298,15 @@ img.gen-img:hover { filter: brightness(1.02); }
         </select>
       </div>
     </div>
+    <hr style="border:none;border-top:1px dashed var(--border);margin:14px 0;">
+    <h4 style="margin:0 0 8px;">🧪 研究所模式（AI harness · 网络安全研究）</h4>
+    <label class="search-toggle" style="margin:2px 0 8px;"><input type="checkbox" id="s-harness">🧪 开启研究所模式（让 AI 充当网络安全研究 harness：情报搜集 / 靶场探测 / 发布为可调用 API）</label>
+    <label>研究取向</label>
+    <div style="display:flex;gap:16px;margin:4px 0 8px;">
+      <label style="font-weight:normal;"><input type="radio" name="team" id="s-team-red" value="red" checked>🔴 红队（对抗模拟 / 找弱点）</label>
+      <label style="font-weight:normal;"><input type="radio" name="team" id="s-team-blue" value="blue">🔵 蓝队（防御研究 / 建检测）</label>
+    </div>
+    <div class="hint" style="margin-bottom:8px;">开启后：对话里说"研究 / 情报 / 漏洞 / 靶场 / 探针"等即进入研究流程。AI 会先在「测试空间」声明你<b>已授权</b>的靶标，再主动探测并观察响应，最后把成果写成 FastAPI 服务发布为团队可调用的 API。<b>AI 只能探测你已声明的靶标，未授权第三方站点一律拒绝。</b></div>
     <div class="hint">
       兼容任何 OpenAI 协议服务：OpenAI / DeepSeek / 通义千问 / Ollama / OpenRouter / 中转站。
       代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
@@ -498,6 +540,28 @@ const IMG_TOOL_SYS = '【生图技能（务必遵守）】你可以调用生图�
 '3) 输出指令块的同时，用一两句话告诉用户"正在为你绘制…"。生成完成后系统会回执结果，你再根据结果简单描述这幅画。\n' +
 '4) 绝对禁止自己编造图片链接、禁止用 markdown 图片语法 ![](...)——用户看不到，只能靠指令块真实生成。\n' +
 '5) 用户只是在讨论/询问某张已有图片（如"这张图里有什么"），不要输出指令块。';
+
+// 研究所模式 / AI harness：网络安全研究助手（全中文，红/蓝队可切换）
+const HARNESS_TOOL_SYS = '【研究所模式 · AI harness（网络安全研究助手）】你此刻是用户的网络安全研究 harness，由用户自带的大模型驱动，目标是帮用户把「一个网络安全研究意图」推进到「可运行的、团队可调用的研究成果（API 服务）」。你拥有搜索、打开网址、操控用户 GitHub（需用户提供令牌）、用 Render 发布网站、以及对用户授权的靶标做主动探测的能力。\n' +
+'【研究取向】当前为 {TEAM}。\n' +
+'  - 红队：以对抗视角寻找目标弱点（收集暴露面、探测异常响应、发现配置/逻辑/注入类隐患），输出可用于授权的渗透测试或防御加固的情报。\n' +
+'  - 蓝队：以防御视角研究攻击手法、构建检测规则/防护逻辑、分析样本与流量，产出可部署的检测或防护能力。\n' +
+'【指令格式（行协议）】你要用下面的协议块指挥前端真实执行：\n' +
+'<<<HARNESS\naction=intel\nquery=搜索词\nHARNESS>>>\n（或 action=intel / fetch=https://某网址 来抓取并阅读网页内容）\n' +
+'<<<HARNESS\naction=target\nop=add\nurl=https://靶标\nnote=授权说明（必填）\nHARNESS>>>\n（op=remove 可撤回。只有被 add 过的靶标才允许被探测）\n' +
+'<<<HARNESS\naction=probe\ntarget=靶标主机或URL\nmethod=GET\npath=/\nheaders=可选JSON\nbody=可选\nHARNESS>>>\n（向已授权靶标发构造请求并观察响应；method 支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）\n' +
+'【工作流】\n' +
+'1) 情报搜集：用 intel 搜索关键词、抓取关键网页/文档，整理背景与攻击面/防御面。\n' +
+'2) 声明靶标：让用户确认要测的目标，用 target/add 把它加入「授权靶标」（note 写清授权来源）。未声明的第三方站点绝对不碰。\n' +
+'3) 主动探测：用 probe 对授权靶标发请求，观察状态码、响应头、报错、行为差异，记录发现。只测已声明靶标。\n' +
+'4) 产出与发布：研究成型后，用 <<<DEV>>> 协议把成果写成一个 FastAPI 服务（在用户的 GitHub 仓库里 write_file 创建 main.py / requirements.txt），再用 DEV 的 publish 动作经 Render 发布成网站；部署成功后把「团队可调用的 API 地址」告诉用户。\n' +
+'【铁律（最高优先，违反即作废）】\n' +
+'1) 只能探测/操作用户在靶场空间里「声明并授权」的靶标；任何未声明的第三方站点，必须先让用户用 target/add 声明授权，否则拒绝并提示。\n' +
+'2) 主动探测只做「观察响应」级别——发构造请求并读取回显；不得执行破坏性利用、不得写入/删除目标数据、不得对目标造成拒服；高危动作（写方法/大载荷/批量）前先暂停，等用户确认。\n' +
+'3) 严禁编造靶标、严禁把探测用到授权范围之外的任何系统。所有探测都会被审计日志记载。\n' +
+'4) 你的所有情报、探测结果、产出代码都要真实可追溯，严禁编造 URL、漏洞编号或测试结果。';
+const HARNESS_TEAM_RED = '（本次为红队研究：聚焦对抗模拟与弱点发现，产出用于授权测试/防御加固的情报与工具。）';
+const HARNESS_TEAM_BLUE = '（本次为蓝队研究：聚焦防御研究与检测能力构建，产出可部署的检测规则/防护服务。）';
 
 // 自主建站技能：AI 自己建 GitHub 仓库、写代码、自检、Render 发布为网站（需设置里填好 GitHub 令牌 + Render 密钥）
 const DEV_TOOL_SYS = '【自主建站技能（务必遵守）】你可以帮用户创建 GitHub 仓库、编写网站代码、自检并发布为真实网站，也可以查看/修改用户旗下任意仓库的文件。当用户要求"建站/做网站/写个网页/个人主页/落地页/把页面发布上线/部署到 Render/建个 GitHub 仓库放代码/看看我的仓库"等时，你必须输出建站指令块，前端会真实执行并把每步结果回执给你。\n' +
@@ -845,6 +909,117 @@ function extractDevActions(text) {
   const unclosed = opens > closes ? opens - closes : 0;
   const unclosedHead = unclosed ? (src.split(/<<<\s*DEV\b/i).pop() || '').slice(0, 120) : '';
   return { actions: actions, bad: bad, cleaned: src.replace(re, '').trim(), unclosed: unclosed, unclosedHead: unclosedHead };
+}
+
+/* ================= 研究所模式 / AI harness：<<<HARNESS ... HARNESS>>> 指令协议 ================= */
+function parseHarnessBlock(raw) {
+  let t = String(raw || '').trim().replace(/^```[a-zA-Z]*\s*/, '').replace(/```$/, '').trim();
+  try { const j = JSON.parse(t); if (j && j.action) return j; } catch (e) {}
+  try {
+    const t2 = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/,\s*([}\]])/g, '$1');
+    const j = JSON.parse(t2); if (j && j.action) return j;
+  } catch (e) {}
+  const KEYS = 'action|op|query|fetch|url|target|method|path|headers|body|note';
+  const obj = {};
+  t.split('\n').forEach(function (ln) {
+    const m = ln.match(new RegExp('^\\s*(' + KEYS + ')\\s*[:=]\\s*(.*)$'));
+    if (m) obj[m[1]] = m[2].trim().replace(/^["']+|["']+$/g, '');
+  });
+  if (obj.action) {
+    if (obj.headers && typeof obj.headers === 'string') { try { obj.headers = JSON.parse(obj.headers); } catch (e) {} }
+    return obj;
+  }
+  return null;
+}
+function extractHarnessActions(text) {
+  const re = /<<<\s*HARNESS\b([\s\S]*?)HARNESS\s*>>>/gi;
+  const actions = [];
+  const bad = [];
+  let m;
+  const src = String(text || '');
+  while ((m = re.exec(src))) {
+    const o = parseHarnessBlock(m[1]);
+    if (o && o.action) actions.push(o); else bad.push(String(m[1]).slice(0, 150));
+  }
+  return { actions: actions, bad: bad, cleaned: src.replace(re, '').trim() };
+}
+// 执行一条 harness 指令：intel（搜索/抓取） / target（声明或撤回靶标） / probe（主动探测）
+async function applyHarnessAction(a) {
+  const action = String(a.action || '').toLowerCase();
+  if (action === 'intel') {
+    const query = a.query || a.fetch || '';
+    if (!query) return '❌ intel 缺少 query/fetch';
+    const isUrl = /^https?:\/\//i.test(query);
+    try {
+      const r = await fetch(isUrl ? '/api/fetch-url' : '/api/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(isUrl
+          ? { url: query, proxy: settings.proxy }
+          : { query: query, engine: settings.searchEngine || 'duckduckgo', proxy: settings.proxy, filter_adult: settings.filterAdult !== false }),
+        signal: controller.signal,
+      });
+      const j = await r.json().catch(() => ({ ok: false, error: '解析失败' }));
+      if (!j.ok) return '❌ 情报获取失败：' + (j.error || '未知');
+      if (isUrl) return '✅ 已抓取 ' + query + '（' + (j.length || 0) + ' 字）：\n' + String(j.content || '').slice(0, 4000);
+      const list = (j.results || []).slice(0, 8).map((s, i) => '[' + (i + 1) + '] ' + s.title + '\n' + s.url + '\n' + (s.snippet || '').slice(0, 160)).join('\n\n');
+      return '✅ 搜索「' + (j.query_used || query) + '」得 ' + (j.results || []).length + ' 条：\n' + list;
+    } catch (e) { return '❌ 情报获取异常：' + e.message; }
+  }
+  if (action === 'target') {
+    const op = String(a.op || 'add').toLowerCase();
+    const url = a.url || a.target || '';
+    const note = a.note || '';
+    if (!url) return '❌ target 缺少 url';
+    let host = '';
+    try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { return '❌ 靶标地址无法解析：' + url; }
+    if (!host) return '❌ 靶标地址无法解析：' + url;
+    const list = scopeData();
+    if (op === 'remove') {
+      const idx = list.findIndex(s => s.host === host);
+      if (idx < 0) return '⚠️ ' + host + ' 不在授权列表中，无需撤回';
+      list.splice(idx, 1);
+      if (conv) { conv.scope = list; Store.saveConv(conv); }
+      renderScope();
+      return '✅ 已撤回靶标 ' + host + ' 的授权';
+    }
+    if (!note) return '❌ 声明靶标必须填写授权说明 note（安全护栏：确认你已获授权）';
+    if (list.some(s => s.host === host)) return '⚠️ ' + host + ' 已在授权列表中';
+    list.push({ host: host, note: note });
+    if (conv) { conv.scope = list; Store.saveConv(conv); }
+    renderScope();
+    return '✅ 已声明靶标 ' + host + '（授权说明：' + note + '）。AI 现在可以对该靶标做主动探测。';
+  }
+  if (action === 'probe') {
+    const target = a.target || '';
+    if (!target) return '❌ probe 缺少 target';
+    const method = (a.method || 'GET').toUpperCase();
+    const path = a.path || '/';
+    let headers = a.headers || {};
+    if (typeof headers === 'string') { try { headers = JSON.parse(headers); } catch (e) { headers = {}; } }
+    const body = a.body || '';
+    const scope = scopeHosts();
+    logProbe('req', '▶ ' + method + ' ' + target + (path && path !== '/' ? path : '') + (scope.length ? '' : '  [无授权靶标]'));
+    try {
+      const r = await fetch('/api/harness/probe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target, method: method, path: path, headers: headers, body: body, scope: scope, timeout: 8 }),
+        signal: controller.signal,
+      });
+      const j = await r.json().catch(() => ({ ok: false, error: '解析失败' }));
+      if (!j.ok) {
+        logProbe('err', '✗ ' + (j.error || '未知错误'));
+        return '❌ 探测被拒绝：' + (j.error || '未知') + '（若你确已获授权，请先用 target/add 声明该靶标）';
+      }
+      const heads = Object.keys(j.headers || {}).slice(0, 12).map(k => k + ': ' + j.headers[k]).join('\n');
+      logProbe('ok', '✓ 状态码 ' + j.status + ' · ' + j.time_ms + 'ms · ' + j.length + ' 字节' + (heads ? '\n' + heads : ''));
+      return '✅ 探测成功：' + method + ' ' + (j.url || target) + '\n状态码 ' + j.status + ' · ' + j.time_ms + 'ms · ' + j.length + ' 字节\n响应头：\n' + (heads || '(无)') +
+        '\n响应正文前 4000 字：\n' + String(j.body_preview || '').slice(0, 4000);
+    } catch (e) {
+      logProbe('err', '✗ ' + e.message);
+      return '❌ 探测异常：' + e.message;
+    }
+  }
+  return '❌ 未知 harness 动作：' + a.action;
 }
 
 // 发布前逻辑/结构门：仅做「结构是否完整、能否运行」的客观校验（不依赖 AI 自觉，也不做内容审核），返回问题列表（空 = 通过）
@@ -1474,6 +1649,7 @@ const Store = {
 let settings = Object.assign({
   apiBase: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.7,
   searchEngine: 'duckduckgo', proxy: '', sysPrompt: '',
+  harnessMode: false, harnessTeam: 'red',
 }, Store.settings);
 let conv = null;
 let busy = false;
@@ -1485,6 +1661,8 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 /* 待发送的图片（base64 data URL，已压缩） */
 let pendingImages = [];
+/* 最近一次生图返回的图片（data URL），用于「打回重做」时把上一版图一起发给 AI */
+let lastGenImages = [];
 
 /* 从消息内容里抽取纯文本：兼容纯字符串与多模态数组（图文混合） */
 function msgText(content) {
@@ -1529,7 +1707,7 @@ function renderMD(md) {
 
 /* ================= 会话 UI ================= */
 function newConv() {
-  conv = { id: uid(), title: '新对话', messages: [] };
+  conv = { id: uid(), title: '新对话', messages: [], scope: [] };
   renderConvs(); renderMsgs(); renderTitle();
 }
 function loadConv(id) {
@@ -1818,6 +1996,24 @@ async function generate(isFreshSend) {
   if (settings.apiKey && imgIntent) {
     messages.push({ role: 'system', content: IMG_TOOL_SYS });
   }
+  // 研究所模式闸门：开启研究所模式，或用户提到研究/情报/漏洞/靶场等，即进入网络安全研究 harness
+  let harnessDevInjected = false;
+  const harnessIntent = settings.harnessMode === true ||
+    /(研究所|研究|情报|威胁|漏洞|红队|蓝队|靶场|靶标|探针|渗透|安全研究|攻击面|防御|detection|red team|blue team|threat|vulnerab|recon)/i.test(text);
+  if (settings.apiKey && harnessIntent) {
+    const team = settings.harnessTeam === 'blue' ? '蓝队' : '红队';
+    const hSys = HARNESS_TOOL_SYS.replace(/\{TEAM\}/g, team) +
+      (settings.harnessTeam === 'blue' ? HARNESS_TEAM_BLUE : HARNESS_TEAM_RED);
+    messages.push({ role: 'system', content: hSys });
+    // 研究成果要写成 FastAPI 服务并发布，需要 DEV 协议（建仓库/写码/发布到 Render）
+    if (settings.githubToken && settings.renderKey) {
+      messages.push({ role: 'system', content: DEV_TOOL_SYS +
+        '\n\n【研究所模式联动】本轮研究中需要把成果写成代码并发布时，请直接用上面的建站/发布协议（<<<DEV>>>）操作用户的 GitHub 与 Render，把研究成果封装成可调用 API 服务。' });
+      harnessDevInjected = true;
+    } else {
+      messages.push({ role: 'system', content: '【系统提示】研究产出要发布成可调用 API，需要设置里填好 GitHub 令牌与 Render API Key。请提醒用户去⚙️设置填写后，你才能把研究成果写成服务并发布上线。' });
+    }
+  }
   // 自主建站技能闸门：用户想建站/操作 GitHub 仓库时注入指令协议（需设置里同时填好 GitHub 令牌 + Render 密钥）
   // 注意：「发布」必须带网站/站点语境，避免和「发布图片」等生图意图撞车
   const devIntent = /(建站|做个?网站|写(个|一个)?(网站|网页|页面)|网站|网页|主页|落地页|landing|homepage|部署|上线|发布\s*(一个|个)?\s*(网站|网页|站点|项目|应用)|render|github|仓库|repo)/i.test(text);
@@ -1827,7 +2023,7 @@ async function generate(isFreshSend) {
     return m && m.role === 'assistant' && m.devSession && m.devSession.active;
   });
   const resumed = (devReady && prevDevMsg) ? prevDevMsg.devSession : null;
-  if (settings.apiKey && devIntent && devReady) {
+  if (!harnessDevInjected && settings.apiKey && devIntent && devReady) {
     let devSys = DEV_TOOL_SYS;
     // 无思考模式：模型推理能力弱，要求严格按协议、少废话
     if ((settings.reasoningMode || 'auto') === 'off') {
@@ -1836,7 +2032,7 @@ async function generate(isFreshSend) {
     // 续建上下文：把上轮真实进度喂给 AI，避免从头重建（重复建仓库/重复写文件）
     if (resumed) devSys += '\n\n' + buildResumeContext(resumed);
     messages.push({ role: 'system', content: devSys });
-  } else if (settings.apiKey && devIntent && !devReady) {
+  } else if (!harnessDevInjected && settings.apiKey && devIntent && !devReady) {
     messages.push({ role: 'system', content: '【系统提示】用户想建站/操作仓库，但设置里还没有填 GitHub 令牌或 Render API Key。请提醒用户：打开右上角⚙️设置 → 填写 GitHub 令牌（ghp_ 开头，需 repo 读写权限）和 Render API Key（rnd_ 开头，dashboard.render.com/u/settings 创建）→ 保存后即可全自动建站发布。这是正常的前置引导，不是拒绝回答。' });
   }
   conv.messages.slice(-20).forEach(m => messages.push({ role: m.role, content: m.content }));
@@ -1993,17 +2189,21 @@ async function generate(isFreshSend) {
             res.images.forEach(function (u) { generatedImages.push(u); });
             imgState.extra = generatedImages.map(function (u) {
               return '<img class="gen-img" src="' + esc(u) + '" alt="AI 生成的图片">';
-            }).join('');
+            }).join('') + buildImgActions(generatedImages);
             const b2 = el.querySelector('.bubble');
             if (b2) b2.innerHTML = imgState.prog + renderMD(finalText) + imgState.extra;
-            genLines.push('✅ 已生成 ' + res.images.length + ' 张图，图片已直接展示给用户（用户能看见）。提示词：' + ia.prompt + (res.revised ? '\n服务商改写后的提示词：' + res.revised : ''));
+            genLines.push('✅ 已生成 ' + res.images.length + ' 张图，图片已直接展示给用户（用户能看见，你也能通过下方回执里的图片看到它）。提示词：' + ia.prompt + (res.revised ? '\n服务商改写后的提示词：' + res.revised : ''));
           } else {
             genLines.push('❌ 生成失败：' + (res.error || '未知错误') + '。提示词：' + ia.prompt);
           }
         }
         setStatus('');
-        messages.push({ role: 'user', content: '【系统回执】生图指令执行结果：\n' + genLines.join('\n') +
-          '\n请基于以上结果继续：成功了就向用户简单描述这幅画（不要贴链接）；失败了就说明原因，可修改提示词后再次输出指令块重试。' });
+        lastGenImages = generatedImages.slice();   // 记录本次图，供「打回重做」引用
+        // 回执改为多模态：把生成的图片作为 image_url 一并回传给模型，让 AI 真正「看见」自己画了什么
+        const recvContent = [{ type: 'text', text: '【系统回执】生图指令执行结果：\n' + genLines.join('\n') +
+          '\n请结合上面这几张你刚生成的图片（图片已随本消息附上，你已能看见）来确认：画面是否符合用户要求。如果符合，就用一两句话向用户简单描述这幅画（不要贴链接）；如果用户后续要求修改，就先看清当前图的不足，再调整提示词重新输出 <<<IMG>>> 指令块重做。' }];
+        generatedImages.slice(0, 4).forEach(function (u) { recvContent.push({ type: 'image_url', image_url: { url: u } }); });
+        messages.push({ role: 'user', content: recvContent });
         toolIter++;
         continue;
       }
@@ -2040,6 +2240,31 @@ async function generate(isFreshSend) {
         }
         messages.push({ role: 'user', content: '【系统回执】建站指令执行结果：\n' + devResults.join('\n') +
           '\n请基于以上真实结果继续：未完成的步骤继续输出指令块；全部完成后向用户汇报真实结果（仓库地址、网站 URL、部署状态）。严禁编造 URL。' });
+        toolIter++;
+        continue;
+      }
+      // ---- 研究所模式：解析 <<<HARNESS ... HARNESS>>> 指令块并真实执行（情报/声明靶标/主动探测）----
+      const hsActs = extractHarnessActions(finalText);
+      if (!hsActs.actions.length && hsActs.bad.length) {
+        finalText = hsActs.cleaned;
+        messages.push({ role: 'assistant', content: r.content || '' });
+        messages.push({ role: 'user', content: '【系统回执⚠️】你的 harness 指令块没有解析成功，未执行任何动作。请严格按行协议重写一遍（一个动作一个块）：\n<<<HARNESS\naction=intel\nquery=搜索词\nHARNESS>>>\n你刚才写的是：' + hsActs.bad.join(' | ') });
+        toolIter++;
+        continue;
+      }
+      if (hsActs.actions.length) {
+        finalText = hsActs.cleaned;
+        messages.push({ role: 'assistant', content: r.content || '' });
+        const bubble = el.querySelector('.bubble');
+        if (bubble) bubble.innerHTML = imgState.prog + renderMD(finalText + '\n\n🧪 正在执行研究指令…');
+        const hsResults = [];
+        for (const ha of hsActs.actions.slice(0, 6)) {
+          const res = await applyHarnessAction(ha);
+          hsResults.push(res);
+        }
+        setStatus('');
+        messages.push({ role: 'user', content: '【系统回执】harness 指令执行结果：\n' + hsResults.join('\n') +
+          '\n请基于以上真实结果继续：情报继续整合、未声明靶标先让用户用 target/add 声明授权、已授权靶标可继续 probe 观察响应；研究成型后用 <<<DEV>>> 把成果写成 FastAPI 服务并用 publish 发布成可调用 API。严禁编造 URL 与测试结果。' });
         toolIter++;
         continue;
       }
@@ -2143,6 +2368,10 @@ function openSettings() {
   $('#s-imgmodel').value = settings.imageModel || 'dall-e-3';
   $('#s-imgsize').value = settings.imageSize || '1024x1024';
   $('#s-sys').value = settings.sysPrompt || '';
+  $('#s-harness').checked = settings.harnessMode === true;
+  const _team = settings.harnessTeam || 'red';
+  $('#s-team-red').checked = _team === 'red';
+  $('#s-team-blue').checked = _team === 'blue';
   $('#settings').classList.add('open');
 }
 function closeSettings() { $('#settings').classList.remove('open'); }
@@ -2198,13 +2427,82 @@ function saveSettings() {
     imageModel: $('#s-imgmodel').value.trim() || 'dall-e-3',
     imageSize: $('#s-imgsize').value,
     sysPrompt: $('#s-sys').value,
+    harnessMode: $('#s-harness').checked,
+    harnessTeam: (document.querySelector('input[name=team]:checked') || {}).value || 'red',
   };
   Store.saveSettings(settings);
+  updateHarnessUI();
   closeSettings();
 }
 
 /* ================= 移动端侧栏 ================= */
 function closeSidebar() { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('show'); }
+
+/* ================= 研究所模式 / AI harness：测试空间（靶场） ================= */
+function scopeData() { if (conv && !Array.isArray(conv.scope)) conv.scope = []; return (conv && conv.scope) || []; }
+function scopeHosts() { return scopeData().map(s => (s && s.host) || '').filter(Boolean); }
+
+function openHarnessPanel() { $('#harnessPanel').classList.add('open'); renderScope(); }
+function closeHarnessPanel() { $('#harnessPanel').classList.remove('open'); }
+
+function renderScope() {
+  const box = $('#hpTargets');
+  if (!box) return;
+  const list = scopeData();
+  if (!list.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);">还没有授权靶标。AI 只能探测你在此声明的靶标。</div>';
+    return;
+  }
+  box.innerHTML = list.map((s, i) =>
+    '<div class="hp-target"><span class="x" data-i="' + i + '" title="撤回授权">×</span>' +
+    '<div class="t">' + esc(s.host) + '</div>' +
+    (s.note ? '<div class="n">📝 ' + esc(s.note) + '</div>' : '') + '</div>'
+  ).join('');
+  box.querySelectorAll('.x').forEach(function (el) {
+    el.onclick = function () { removeTarget(parseInt(el.getAttribute('data-i'))); };
+  });
+}
+function addTarget() {
+  const url = $('#hpTarget').value.trim();
+  const note = $('#hpNote').value.trim();
+  if (!url) { setStatus('⚠️ 请填写靶标地址'); return; }
+  if (!note) { setStatus('⚠️ 必须填写授权说明（这是安全护栏，确认你已获授权）'); return; }
+  let host = '';
+  try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { setStatus('⚠️ 靶标地址无法解析'); return; }
+  if (!host) { setStatus('⚠️ 靶标地址无法解析'); return; }
+  const list = scopeData();
+  if (list.some(s => s.host === host)) { setStatus('该靶标已在授权列表中'); return; }
+  list.push({ host: host, note: note });
+  if (conv) { conv.scope = list; Store.saveConv(conv); }
+  $('#hpTarget').value = ''; $('#hpNote').value = '';
+  renderScope();
+  setStatus('✅ 已声明靶标 ' + host + '（AI 现在可以探测它）');
+}
+function removeTarget(i) {
+  const list = scopeData();
+  if (i >= 0 && i < list.length) {
+    const h = list[i].host;
+    list.splice(i, 1);
+    if (conv) { conv.scope = list; Store.saveConv(conv); }
+    renderScope();
+    setStatus('🚫 已撤回靶标 ' + h + ' 的授权');
+  }
+}
+function logProbe(kind, text) {
+  const box = $('#hpLog');
+  if (!box) return;
+  const line = document.createElement('div');
+  line.className = kind;
+  line.textContent = text;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+function updateHarnessUI() {
+  const on = settings.harnessMode === true;
+  const btn = $('#harnessBtn');
+  if (btn) btn.style.display = on ? '' : 'none';
+  if (on && btn) btn.textContent = '🧪 测试空间（' + (settings.harnessTeam === 'blue' ? '蓝队' : '红队') + '）';
+}
 
 /* ================= 初始化 ================= */
 $('#newBtn').onclick = () => { newConv(); closeSidebar(); };
@@ -2213,6 +2511,9 @@ $('#saveBtn').onclick = saveSettings;
 $('#testBtn').onclick = testConn;
 $('#agnesBtn').onclick = fillAgnesPreset;
 $('#plugBtn').onclick = openPlugins;
+$('#harnessBtn').onclick = openHarnessPanel;
+$('#hpClose').onclick = closeHarnessPanel;
+$('#hpAdd').onclick = addTarget;
 $('#pe-save').onclick = savePlugEdit;
 $('#pe-cancel').onclick = closePlugEdit;
 $('#disc-ai').onclick = discAI;
@@ -2339,6 +2640,7 @@ $('#imgInput').onchange = function () {
 
 newConv();
 renderPlugBadge();
+updateHarnessUI();
 // 生成图片灯箱：点击放大，再点关闭
 (function () {
   const lb = document.getElementById('imgLightbox');
@@ -2357,6 +2659,25 @@ fetch('/api/agentos-status').then(r => r.json()).then(j => {
   if (j.agentos) setStatus('💡 平台已内置 Agno AgentOS 智能体接口（/agno）');
 }).catch(() => {});
 </script>
+<div id="harnessPanel" class="harness-panel">
+  <div class="hp-head">
+    <strong>🧪 测试空间 · 靶场</strong>
+    <button class="hp-close" id="hpClose" title="关闭">×</button>
+  </div>
+  <div class="hp-section">
+    <div class="hp-title">授权靶标（仅这些可被 AI 探测）</div>
+    <div class="hp-add">
+      <input id="hpTarget" placeholder="靶标地址，如 https://pre.example.com">
+      <input id="hpNote" placeholder="授权说明（必填，如：预发环境已获书面授权）">
+      <button id="hpAdd" class="btn primary" style="padding:6px 10px;">+ 声明靶标</button>
+    </div>
+    <div id="hpTargets" class="hp-targets"></div>
+  </div>
+  <div class="hp-section hp-grow">
+    <div class="hp-title">探针日志（实时，仅记录已授权靶标的探测）</div>
+    <div id="hpLog" class="hp-log"></div>
+  </div>
+</div>
 <div id="imgLightbox"><img alt="放大预览"></div>
 </body>
 </html>
