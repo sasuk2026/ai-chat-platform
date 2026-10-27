@@ -733,7 +733,8 @@ async def search(request: Request):
     q_used = clean_query(query) or query
     filter_adult = bool(body.get("filter_adult", True))
     results = await web_search(q_used, engine=engine, proxy=proxy, filter_adult=filter_adult, max_results=15)
-    return JSONResponse({"results": results, "query_used": q_used, "filter_adult": filter_adult})
+    # ok 字段是前端 intel 搜索成败的判定依据（!j.ok 即判失败）；务必携带，否则搜索永远被误判失败
+    return JSONResponse({"ok": True, "results": results, "query_used": q_used, "filter_adult": filter_adult})
 
 
 @app.post("/api/search-debug")
