@@ -612,7 +612,7 @@ const HARNESS_TOOL_SYS = '【研究所模式 · AI harness（网络安全研究�
 '<<<HARNESS\naction=target\nop=add\nurl=https://靶标\nnote=授权说明（必填）\nHARNESS>>>\n（op=remove 可撤回。只有被 add 过的靶标才允许被探测）\n' +
 '<<<HARNESS\naction=probe\ntarget=靶标主机或URL\nmethod=GET\npath=/\nheaders=可选JSON\nbody=可选\nHARNESS>>>\n（向已授权靶标发构造请求并观察响应；method 支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）\n' +
 '【模型靶向（打模型）】除网站外，也可把"模型"作为研究对象：生图模型或文字模型，攻击面分三类——前端（输入校验/越权/提示注入/越狱）、后端（处理逻辑/解析/越权执行/工具调用）、侧攻击（计时/资源/并发等侧通道）。声明模型靶标并开始：\n' +
-'<<<HARNESS\naction=target\nop=add\nurl=https://模型端点\ntype=model\nmodel_type=image|text\nmodel_name=该接口调用的模型名（如gpt-4o-mini）\nvector=front|back|side\ngoal=预期效果（如"验证能否越权读取他人图片/绕过内容审核"）\nnote=授权说明\nHARNESS>>>\n' + +
+'<<<HARNESS\naction=target\nop=add\nurl=https://模型端点\ntype=model\nmodel_type=image|text\nmodel_name=该接口调用的模型名（如gpt-4o-mini）\nvector=front|back|side\ngoal=预期效果（如"验证能否越权读取他人图片/绕过内容审核"）\nnote=授权说明\nHARNESS>>>\n' +
 '侧通道计时：probe 加 repeat=N（如 repeat=20）可重复请求并回传 min/avg/max 耗时，用于发现时序差异。\n' +
 '【工作流】\n' +
 '1) 情报搜集：用 intel 搜索关键词、抓取关键网页/文档，整理背景与攻击面/防御面。\n' +
