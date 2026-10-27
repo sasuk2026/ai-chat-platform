@@ -818,26 +818,57 @@ async def harness_probe(request: Request):
                 h[str(k)] = str(v)
         body_bytes = payload.encode() if isinstance(payload, str) else b""
         has_body = method in ("POST", "PUT", "PATCH", "DELETE")
-        t0 = _t.time()
+        try:
+            repeat = max(1, min(int(body.get("repeat") or 1), 20))
+        except Exception:
+            repeat = 1
+        timings = []
+        last = None
+        full = target.rstrip("/") + (path if path.startswith("/") else "/" + path)
         async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, max_redirects=3) as client:
-            full = target.rstrip("/") + (path if path.startswith("/") else "/" + path)
-            r = await client.request(method, full, headers=h,
-                                    content=body_bytes if has_body else None)
-            elapsed = int((_t.time() - t0) * 1000)
-            resp_headers = {k: v for k, v in r.headers.items()}
-            preview = r.text[:20000]
-            return JSONResponse({
-                "ok": True,
-                "status": r.status_code,
-                "method": method,
-                "url": str(r.url),
-                "headers": resp_headers,
-                "body_preview": preview,
-                "length": len(r.content),
-                "time_ms": elapsed,
-            })
+            for _ in range(repeat):
+                t0 = _t.time()
+                r = await client.request(method, full, headers=h,
+                                        content=body_bytes if has_body else None)
+                timings.append(int((_t.time() - t0) * 1000))
+            last = r
+        elapsed = timings[-1]
+        resp_headers = {k: v for k, v in last.headers.items()}
+        preview = last.text[:20000]
+        out = {
+            "ok": True,
+            "status": last.status_code,
+            "method": method,
+            "url": str(last.url),
+            "headers": resp_headers,
+            "body_preview": preview,
+            "length": len(last.content),
+            "time_ms": elapsed,
+        }
+        # 侧通道/计时分析：多次请求汇总最小/平均/最大耗时，便于发现时序差异
+        if repeat > 1:
+            out["timing"] = {"count": repeat, "min": min(timings),
+                             "avg": sum(timings) // repeat, "max": max(timings)}
+        return JSONResponse(out)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:400]})
+
+
+# ---------------- 红队工具种子插件（研究所模式一键加载） ----------------
+@app.get("/api/plugins/seed")
+async def plugins_seed():
+    """返回内置的红队工具参考插件（markdown 文件），供前端一键载入 harness。"""
+    import os as _os
+    base = _os.path.join(_os.path.dirname(__file__), "static", "plugins", "redteam")
+    items = []
+    try:
+        for fn in sorted(_os.listdir(base)):
+            if fn.endswith(".md"):
+                with open(_os.path.join(base, fn), "r", encoding="utf-8") as f:
+                    items.append({"name": fn[:-3], "content": f.read()})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "items": []})
+    return JSONResponse({"ok": True, "items": items})
 
 
 # ---------------- AI 生图（OpenAI images 协议） ----------------
