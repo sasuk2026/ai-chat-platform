@@ -148,6 +148,14 @@ img.gen-img:hover { filter: brightness(1.02); }
 .hp-log .ok { color: #16a34a; }
 .hp-log .err { color: #dc2626; }
 .hp-log .meta { color: var(--muted); }
+.hp-target.model { border-color: #6366f1; background: #f5f3ff; }
+.hp-badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #eef2ff; color: #4338ca; margin-left: 4px; vertical-align: middle; }
+.hp-badge.site { background: #ecfdf5; color: #047857; }
+.hp-seed { font-size: 12px; margin-top: 6px; }
+.hp-model-form { display: flex; flex-direction: column; gap: 5px; }
+.hp-model-form label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.hp-model-form select, .hp-model-form input { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font-size: 12px; font-family: inherit; box-sizing: border-box; width: 100%; }
+.hp-model-form select { background: var(--bg); color: var(--text); }
 #imgLightbox { position: fixed; inset: 0; background: rgba(15,17,26,.88); display: none; align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; padding: 24px; }
 #imgLightbox.show { display: flex; }
 #imgLightbox img { max-width: 96vw; max-height: 92vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
@@ -550,11 +558,15 @@ const HARNESS_TOOL_SYS = '【研究所模式 · AI harness（网络安全研究�
 '<<<HARNESS\naction=intel\nquery=搜索词\nHARNESS>>>\n（或 action=intel / fetch=https://某网址 来抓取并阅读网页内容）\n' +
 '<<<HARNESS\naction=target\nop=add\nurl=https://靶标\nnote=授权说明（必填）\nHARNESS>>>\n（op=remove 可撤回。只有被 add 过的靶标才允许被探测）\n' +
 '<<<HARNESS\naction=probe\ntarget=靶标主机或URL\nmethod=GET\npath=/\nheaders=可选JSON\nbody=可选\nHARNESS>>>\n（向已授权靶标发构造请求并观察响应；method 支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）\n' +
+'【模型靶向（打模型）】除网站外，也可把"模型"作为研究对象：生图模型或文字模型，攻击面分三类——前端（输入校验/越权/提示注入/越狱）、后端（处理逻辑/解析/越权执行/工具调用）、侧攻击（计时/资源/并发等侧通道）。声明模型靶标并开始：\n' +
+'<<<HARNESS\naction=target\nop=add\nurl=https://模型端点\ntype=model\nmodel_type=image|text\nvector=front|back|side\ngoal=预期效果（如"验证能否越权读取他人图片/绕过内容审核"）\nnote=授权说明\nHARNESS>>>\n' +
+'侧通道计时：probe 加 repeat=N（如 repeat=20）可重复请求并回传 min/avg/max 耗时，用于发现时序差异。\n' +
 '【工作流】\n' +
 '1) 情报搜集：用 intel 搜索关键词、抓取关键网页/文档，整理背景与攻击面/防御面。\n' +
 '2) 声明靶标：让用户确认要测的目标，用 target/add 把它加入「授权靶标」（note 写清授权来源）。未声明的第三方站点绝对不碰。\n' +
 '3) 主动探测：用 probe 对授权靶标发请求，观察状态码、响应头、报错、行为差异，记录发现。只测已声明靶标。\n' +
 '4) 产出与发布：研究成型后，用 <<<DEV>>> 协议把成果写成一个 FastAPI 服务（在用户的 GitHub 仓库里 write_file 创建 main.py / requirements.txt），再用 DEV 的 publish 动作经 Render 发布成网站；部署成功后把「团队可调用的 API 地址」告诉用户。\n' +
+'5) 断点续研：研究进度会自动保存，断网/刷新/中途停止后重新进入会从断点继续，不要从头重来；续研时先读回已执行步骤再继续。\n' +
 '【铁律（最高优先，违反即作废）】\n' +
 '1) 只能探测/操作用户在靶场空间里「声明并授权」的靶标；任何未声明的第三方站点，必须先让用户用 target/add 声明授权，否则拒绝并提示。\n' +
 '2) 主动探测只做「观察响应」级别——发构造请求并读取回显；不得执行破坏性利用、不得写入/删除目标数据、不得对目标造成拒服；高危动作（写方法/大载荷/批量）前先暂停，等用户确认。\n' +
@@ -919,7 +931,7 @@ function parseHarnessBlock(raw) {
     const t2 = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/,\s*([}\]])/g, '$1');
     const j = JSON.parse(t2); if (j && j.action) return j;
   } catch (e) {}
-  const KEYS = 'action|op|query|fetch|url|target|method|path|headers|body|note';
+  const KEYS = 'action|op|query|fetch|url|target|method|path|headers|body|note|type|vector|goal|model_type|attack_surface|repeat';
   const obj = {};
   t.split('\n').forEach(function (ln) {
     const m = ln.match(new RegExp('^\\s*(' + KEYS + ')\\s*[:=]\\s*(.*)$'));
@@ -969,6 +981,9 @@ async function applyHarnessAction(a) {
     const op = String(a.op || 'add').toLowerCase();
     const url = a.url || a.target || '';
     const note = a.note || '';
+    const ttype = String(a.type || 'site').toLowerCase();   // site | model
+    const vector = a.vector || a.attack_surface || '';
+    const goal = a.goal || '';
     if (!url) return '❌ target 缺少 url';
     let host = '';
     try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { return '❌ 靶标地址无法解析：' + url; }
@@ -984,10 +999,15 @@ async function applyHarnessAction(a) {
     }
     if (!note) return '❌ 声明靶标必须填写授权说明 note（安全护栏：确认你已获授权）';
     if (list.some(s => s.host === host)) return '⚠️ ' + host + ' 已在授权列表中';
-    list.push({ host: host, note: note });
+    const item = { host: host, url: url, note: note, type: ttype };
+    if (ttype === 'model') { item.vector = vector; item.goal = goal; item.model_type = a.model_type || ''; }
+    list.push(item);
     if (conv) { conv.scope = list; Store.saveConv(conv); }
     renderScope();
-    return '✅ 已声明靶标 ' + host + '（授权说明：' + note + '）。AI 现在可以对该靶标做主动探测。';
+    let extra = '';
+    if (ttype === 'model') extra = '（模型靶向：' + (item.model_type || '未指定') + ' · 攻击面=' + (vector || '未指定') + (goal ? ' · 预期效果=' + goal : '') + '）';
+    updateHarnessSession({ action: 'target', host: host, type: ttype });
+    return '✅ 已声明靶标 ' + host + '（授权说明：' + note + '）' + extra + '。AI 现在可以对该靶标做主动探测/模型研究。';
   }
   if (action === 'probe') {
     const target = a.target || '';
@@ -1002,7 +1022,7 @@ async function applyHarnessAction(a) {
     try {
       const r = await fetch('/api/harness/probe', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: target, method: method, path: path, headers: headers, body: body, scope: scope, timeout: 8 }),
+        body: JSON.stringify({ target: target, method: method, path: path, headers: headers, body: body, scope: scope, timeout: 8, repeat: a.repeat || 1 }),
         signal: controller.signal,
       });
       const j = await r.json().catch(() => ({ ok: false, error: '解析失败' }));
@@ -1661,6 +1681,8 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 /* 待发送的图片（base64 data URL，已压缩） */
 let pendingImages = [];
+// 研究所会话状态（模块级，供 updateHarnessSession 等顶层函数访问；每次 send 开始时重置）
+let harnessSession = null;
 /* 最近一次生图返回的图片（data URL），用于「打回重做」时把上一版图一起发给 AI */
 let lastGenImages = [];
 
@@ -2000,10 +2022,15 @@ async function generate(isFreshSend) {
   let harnessDevInjected = false;
   const harnessIntent = settings.harnessMode === true ||
     /(研究所|研究|情报|威胁|漏洞|红队|蓝队|靶场|靶标|探针|渗透|安全研究|攻击面|防御|detection|red team|blue team|threat|vulnerab|recon)/i.test(text);
+  const prevHarnessMsg = [].concat(conv.messages).reverse().find(function (m) {
+    return m && m.role === 'assistant' && m.harnessSession && m.harnessSession.active;
+  });
+  const harnessResumed = prevHarnessMsg ? prevHarnessMsg.harnessSession : null;
   if (settings.apiKey && harnessIntent) {
     const team = settings.harnessTeam === 'blue' ? '蓝队' : '红队';
     const hSys = HARNESS_TOOL_SYS.replace(/\{TEAM\}/g, team) +
       (settings.harnessTeam === 'blue' ? HARNESS_TEAM_BLUE : HARNESS_TEAM_RED);
+    if (harnessResumed) hSys += '\n\n' + buildHarnessResume(harnessResumed);
     messages.push({ role: 'system', content: hSys });
     // 研究成果要写成 FastAPI 服务并发布，需要 DEV 协议（建仓库/写码/发布到 Render）
     if (settings.githubToken && settings.renderKey) {
@@ -2080,6 +2107,7 @@ async function generate(isFreshSend) {
   // ---- 建站进度快照（断点续传）----
   // devSession 持久化到消息对象：断网/刷新/停止后，下一轮对话可从此处恢复，不会从头重建
   let devSession = null;
+  harnessSession = null;
   function updateDevSession(da, res) {
     if (!devSession) devSession = { active: true, repo: null, branch: 'main', files: {}, steps: [], renderService: null, renderName: null, url: null, done: false, updatedAt: Date.now() };
     if (da.action === 'create_repo') {
@@ -2261,6 +2289,7 @@ async function generate(isFreshSend) {
         for (const ha of hsActs.actions.slice(0, 6)) {
           const res = await applyHarnessAction(ha);
           hsResults.push(res);
+          updateHarnessSession(ha, res);
         }
         setStatus('');
         messages.push({ role: 'user', content: '【系统回执】harness 指令执行结果：\n' + hsResults.join('\n') +
@@ -2288,6 +2317,7 @@ async function generate(isFreshSend) {
   if (generatedImages.length) ph.images = generatedImages.slice(0, 4);
   if (devLines.length) ph.devlog = renderDevLog(devLines.slice(-40));   // 建站进度随消息持久化
   if (devSession) { devSession.active = !devSession.done || !!devSession.url; ph.devSession = devSession; }   // 建站进度快照持久化（断网/刷新后可续建）
+  if (harnessSession) { harnessSession.active = !!harnessIntent; ph.harnessSession = harnessSession; }   // 研究所会话持久化（断网/刷新后可续研）
   el.remove();
   conv.messages.push(ph);
   box.appendChild(msgEl(ph, conv.messages.length - 1));
@@ -2453,11 +2483,16 @@ function renderScope() {
     box.innerHTML = '<div style="font-size:12px;color:var(--muted);">还没有授权靶标。AI 只能探测你在此声明的靶标。</div>';
     return;
   }
-  box.innerHTML = list.map((s, i) =>
-    '<div class="hp-target"><span class="x" data-i="' + i + '" title="撤回授权">×</span>' +
-    '<div class="t">' + esc(s.host) + '</div>' +
-    (s.note ? '<div class="n">📝 ' + esc(s.note) + '</div>' : '') + '</div>'
-  ).join('');
+  box.innerHTML = list.map((s, i) => {
+    const isModel = s.type === 'model';
+    const badge = isModel
+      ? '<span class="hp-badge">🤖 模型·' + esc(s.model_type || '?') + '·' + esc(s.vector || '?') + '</span>'
+      : '<span class="hp-badge site">🌐 网站</span>';
+    return '<div class="hp-target' + (isModel ? ' model' : '') + '"><span class="x" data-i="' + i + '" title="撤回授权">×</span>' +
+      '<div class="t">' + esc(s.host) + ' ' + badge + '</div>' +
+      (s.goal ? '<div class="n">🎯 ' + esc(s.goal) + '</div>' : '') +
+      (s.note ? '<div class="n">📝 ' + esc(s.note) + '</div>' : '') + '</div>';
+  }).join('');
   box.querySelectorAll('.x').forEach(function (el) {
     el.onclick = function () { removeTarget(parseInt(el.getAttribute('data-i'))); };
   });
@@ -2504,6 +2539,78 @@ function updateHarnessUI() {
   if (on && btn) btn.textContent = '🧪 测试空间（' + (settings.harnessTeam === 'blue' ? '蓝队' : '红队') + '）';
 }
 
+/* ================= 研究所模式：会话持久化（防断网续研） + 红队工具库 + 模型靶向 ================= */
+function harnessSessionData() {
+  if (conv && !conv.harnessSession) conv.harnessSession = null;
+  return (conv && conv.harnessSession) || null;
+}
+function buildHarnessResume(s) {
+  if (!s) return '';
+  const steps = (s.steps || []).slice(-25);
+  const stepDesc = steps.length ? steps.join('\n') : '（尚无执行步骤）';
+  const target = s.target ? ('目标：' + s.target + (s.targetType === 'model' ? '（模型·' + (s.vector || '?') + '）' : '') + '\n') : '';
+  return '【研究所续研上下文·请勿从头开始】上一轮研究所未结束，当前真实进度：\n' + target +
+    '起始课题：' + (s.topic || '（未记录）') + '\n' +
+    '已执行步骤（最新 ' + steps.length + ' 条）：\n' + stepDesc + '\n' +
+    '请先读回以上进度，从断点继续：未完成的情报/探测继续做；需要新靶标先 target/add；最终用 <<<DEV>>> 发布成果。严禁重复已完成的步骤。';
+}
+function updateHarnessSession(ha, res) {
+  if (!harnessSession) harnessSession = { active: true, topic: '', target: '', targetType: '', vector: '', steps: [], startedAt: Date.now() };
+  const key = ha.target || ha.url || ha.query || ha.host || '';
+  harnessSession.steps.push((ha.action || '?') + (key ? '(' + key + ')' : ''));
+  if (ha.action === 'target' && ha.host) { harnessSession.target = ha.host; harnessSession.targetType = ha.type || 'site'; harnessSession.vector = ha.vector || ''; }
+  if (ha.action === 'intel' && ha.query && !harnessSession.topic) harnessSession.topic = ha.query;
+  harnessSession.updatedAt = Date.now();
+}
+async function seedRedteamTools() {
+  const st = $('#hpSeed');
+  if (st) { st.textContent = '📦 正在加载红队工具库…'; st.style.color = 'var(--muted)'; }
+  try {
+    const r = await fetch('/api/plugins/seed');
+    const j = await r.json();
+    if (!j.ok) { if (st) { st.textContent = '❌ ' + (j.error || '加载失败'); st.style.color = '#dc2626'; } return; }
+    const items = j.items || [];
+    const names = plugins.map(function (p) { return p.name; });
+    let added = 0;
+    for (const it of items) {
+      if (names.indexOf(it.name) >= 0) continue;
+      plugins.push({ id: uid(), name: it.name, content: it.content, enabled: true });
+      added++;
+    }
+    if (added) { savePlugins(); renderPlugins(); renderPlugBadge(); }
+    if (st) { st.textContent = '✅ 已载入 ' + added + ' 个红队工具插件（仓库共 ' + items.length + ' 个可用）'; st.style.color = '#16a34a'; }
+  } catch (e) { if (st) { st.textContent = '❌ ' + e.message; st.style.color = '#dc2626'; } }
+}
+function startModelTarget() {
+  const mt = $('#mtType').value;
+  const vec = $('#mtVector').value;
+  const url = $('#mtUrl').value.trim();
+  const note = $('#mtNote').value.trim();
+  const goal = $('#mtGoal').value.trim();
+  if (!url) { setStatus('⚠️ 请填写模型端点 URL'); return; }
+  if (!note) { setStatus('⚠️ 必须填写授权说明（安全护栏）'); return; }
+  let host = '';
+  try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { setStatus('⚠️ 模型端点无法解析'); return; }
+  if (!host) { setStatus('⚠️ 模型端点无法解析'); return; }
+  const list = scopeData();
+  if (!list.some(function (s) { return s.host === host; })) {
+    list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt });
+    if (conv) { conv.scope = list; Store.saveConv(conv); }
+    renderScope();
+  }
+  const vecText = { front: '前端（输入校验/越权/提示注入/越狱）', back: '后端（处理逻辑/解析/越权执行）', side: '侧攻击（计时/资源/并发等侧通道）' }[vec] || vec;
+  const brief = '请立即以研究所模式开工，对以下【模型】做授权安全研究（全程仅测已声明的该靶标）：\n' +
+    '· 模型类型：' + (mt === 'image' ? '生图模型' : '文字模型') + '\n' +
+    '· 攻击面：' + vecText + '\n' +
+    '· 目标端点：' + url + '\n' +
+    '· 预期效果：' + (goal || '（用户未填，请先确认研究目标）') + '\n' +
+    '· 授权说明：' + note + '\n' +
+    '研究动作：先 intel 搜同类案例与已知弱点；靶标已声明授权，直接开始；用 probe（侧攻击面时加 repeat=N 做计时聚合）逐步探测并观察响应；' +
+    '最终用 <<<DEV>>> 把成果封装成团队可调用的 API 服务。进度会自动保存，可断点续研。';
+  $('#input').value = brief;
+  send();
+}
+
 /* ================= 初始化 ================= */
 $('#newBtn').onclick = () => { newConv(); closeSidebar(); };
 $('#cfgBtn').onclick = () => openSettings();
@@ -2512,6 +2619,8 @@ $('#testBtn').onclick = testConn;
 $('#agnesBtn').onclick = fillAgnesPreset;
 $('#plugBtn').onclick = openPlugins;
 $('#harnessBtn').onclick = openHarnessPanel;
+$('#hpSeedBtn').onclick = seedRedteamTools;
+$('#mtStart').onclick = startModelTarget;
 $('#hpClose').onclick = closeHarnessPanel;
 $('#hpAdd').onclick = addTarget;
 $('#pe-save').onclick = savePlugEdit;
@@ -2641,6 +2750,7 @@ $('#imgInput').onchange = function () {
 newConv();
 renderPlugBadge();
 updateHarnessUI();
+if (!plugins.length) seedRedteamTools();   // 首次进入无插件时自动把红队工具库载入 harness
 // 生成图片灯箱：点击放大，再点关闭
 (function () {
   const lb = document.getElementById('imgLightbox');
@@ -2672,6 +2782,34 @@ fetch('/api/agentos-status').then(r => r.json()).then(j => {
       <button id="hpAdd" class="btn primary" style="padding:6px 10px;">+ 声明靶标</button>
     </div>
     <div id="hpTargets" class="hp-targets"></div>
+  </div>
+  <div class="hp-section">
+    <div class="hp-title">📦 红队工具库（一键载入 harness）</div>
+    <button id="hpSeedBtn" class="btn" style="width:100%;padding:6px 10px;">⚔️ 加载红队工具插件</button>
+    <div id="hpSeed" class="hp-seed"></div>
+  </div>
+  <div class="hp-section">
+    <div class="hp-title">🤖 模型靶向（填表即开工）</div>
+    <div class="hp-model-form">
+      <label>模型类型</label>
+      <select id="mtType">
+        <option value="image">生图模型</option>
+        <option value="text">文字模型</option>
+      </select>
+      <label>攻击面</label>
+      <select id="mtVector">
+        <option value="front">前端（输入校验/越权/提示注入/越狱）</option>
+        <option value="back">后端（处理逻辑/解析/越权执行）</option>
+        <option value="side">侧攻击（计时/资源/并发侧通道）</option>
+      </select>
+      <label>模型端点 URL</label>
+      <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
+      <label>授权说明（必填）</label>
+      <input id="mtNote" placeholder="如：该端点为本人所有 / 已获书面授权测试">
+      <label>预期效果（选填）</label>
+      <input id="mtGoal" placeholder="如：验证能否越权读取他人图片 / 绕过内容审核">
+      <button id="mtStart" class="btn primary" style="width:100%;padding:6px 10px;margin-top:4px;">🚀 开工（自动探测并续研）</button>
+    </div>
   </div>
   <div class="hp-section hp-grow">
     <div class="hp-title">探针日志（实时，仅记录已授权靶标的探测）</div>
