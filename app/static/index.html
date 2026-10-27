@@ -334,6 +334,54 @@ img.gen-img:hover { filter: brightness(1.02); }
   </div>
 </div>
 
+<div id="harnessPanel" class="harness-panel">
+  <div class="hp-head">
+    <strong>🧪 测试空间 · 靶场</strong>
+    <button class="hp-close" id="hpClose" title="关闭">×</button>
+  </div>
+  <div class="hp-section">
+    <div class="hp-title">授权靶标（仅这些可被 AI 探测）</div>
+    <div class="hp-add">
+      <input id="hpTarget" placeholder="靶标地址，如 https://pre.example.com">
+      <input id="hpNote" placeholder="授权说明（必填，如：预发环境已获书面授权）">
+      <button id="hpAdd" class="btn primary" style="padding:6px 10px;">+ 声明靶标</button>
+    </div>
+    <div id="hpTargets" class="hp-targets"></div>
+  </div>
+  <div class="hp-section">
+    <div class="hp-title">📦 红队工具库（一键载入 harness）</div>
+    <button id="hpSeedBtn" class="btn" style="width:100%;padding:6px 10px;">⚔️ 加载红队工具插件</button>
+    <div id="hpSeed" class="hp-seed"></div>
+  </div>
+  <div class="hp-section">
+    <div class="hp-title">🤖 模型靶向（填表即开工）</div>
+    <div class="hp-model-form">
+      <label>模型类型</label>
+      <select id="mtType">
+        <option value="image">生图模型</option>
+        <option value="text">文字模型</option>
+      </select>
+      <label>攻击面</label>
+      <select id="mtVector">
+        <option value="front">前端（输入校验/越权/提示注入/越狱）</option>
+        <option value="back">后端（处理逻辑/解析/越权执行）</option>
+        <option value="side">侧攻击（计时/资源/并发侧通道）</option>
+      </select>
+      <label>模型端点 URL</label>
+      <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
+      <label>授权说明（必填）</label>
+      <input id="mtNote" placeholder="如：该端点为本人所有 / 已获书面授权测试">
+      <label>预期效果（选填）</label>
+      <input id="mtGoal" placeholder="如：验证能否越权读取他人图片 / 绕过内容审核">
+      <button id="mtStart" class="btn primary" style="width:100%;padding:6px 10px;margin-top:4px;">🚀 开工（自动探测并续研）</button>
+    </div>
+  </div>
+  <div class="hp-section hp-grow">
+    <div class="hp-title">探针日志（实时，仅记录已授权靶标的探测）</div>
+    <div id="hpLog" class="hp-log"></div>
+  </div>
+</div>
+
 <script>
 /* ================= 访问门禁已移除（应用锁已解，进页面即可直接使用） ================= */
 
@@ -2769,53 +2817,6 @@ fetch('/api/agentos-status').then(r => r.json()).then(j => {
   if (j.agentos) setStatus('💡 平台已内置 Agno AgentOS 智能体接口（/agno）');
 }).catch(() => {});
 </script>
-<div id="harnessPanel" class="harness-panel">
-  <div class="hp-head">
-    <strong>🧪 测试空间 · 靶场</strong>
-    <button class="hp-close" id="hpClose" title="关闭">×</button>
-  </div>
-  <div class="hp-section">
-    <div class="hp-title">授权靶标（仅这些可被 AI 探测）</div>
-    <div class="hp-add">
-      <input id="hpTarget" placeholder="靶标地址，如 https://pre.example.com">
-      <input id="hpNote" placeholder="授权说明（必填，如：预发环境已获书面授权）">
-      <button id="hpAdd" class="btn primary" style="padding:6px 10px;">+ 声明靶标</button>
-    </div>
-    <div id="hpTargets" class="hp-targets"></div>
-  </div>
-  <div class="hp-section">
-    <div class="hp-title">📦 红队工具库（一键载入 harness）</div>
-    <button id="hpSeedBtn" class="btn" style="width:100%;padding:6px 10px;">⚔️ 加载红队工具插件</button>
-    <div id="hpSeed" class="hp-seed"></div>
-  </div>
-  <div class="hp-section">
-    <div class="hp-title">🤖 模型靶向（填表即开工）</div>
-    <div class="hp-model-form">
-      <label>模型类型</label>
-      <select id="mtType">
-        <option value="image">生图模型</option>
-        <option value="text">文字模型</option>
-      </select>
-      <label>攻击面</label>
-      <select id="mtVector">
-        <option value="front">前端（输入校验/越权/提示注入/越狱）</option>
-        <option value="back">后端（处理逻辑/解析/越权执行）</option>
-        <option value="side">侧攻击（计时/资源/并发侧通道）</option>
-      </select>
-      <label>模型端点 URL</label>
-      <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
-      <label>授权说明（必填）</label>
-      <input id="mtNote" placeholder="如：该端点为本人所有 / 已获书面授权测试">
-      <label>预期效果（选填）</label>
-      <input id="mtGoal" placeholder="如：验证能否越权读取他人图片 / 绕过内容审核">
-      <button id="mtStart" class="btn primary" style="width:100%;padding:6px 10px;margin-top:4px;">🚀 开工（自动探测并续研）</button>
-    </div>
-  </div>
-  <div class="hp-section hp-grow">
-    <div class="hp-title">探针日志（实时，仅记录已授权靶标的探测）</div>
-    <div id="hpLog" class="hp-log"></div>
-  </div>
-</div>
 <div id="imgLightbox"><img alt="放大预览"></div>
 </body>
 </html>
