@@ -749,6 +749,97 @@ async def search_debug(request: Request):
         return JSONResponse({"ok": False, "error": repr(e)[:300]})
 
 
+# ---------------- 研究所模式 / AI harness：靶场主动探测 ----------------
+def _host_in_scope(host: str, scope) -> bool:
+    """判断 host 是否落在授权靶标范围内（支持父域覆盖子域）。"""
+    if not host:
+        return False
+    host = host.lower()
+    if not isinstance(scope, list):
+        scope = [scope]
+    from urllib.parse import urlparse
+    for s in scope:
+        s = (s or "").strip().lower()
+        if not s:
+            continue
+        if s.startswith(("http://", "https://")):
+            s = urlparse(s).hostname or s
+        if s == host or host.endswith("." + s):
+            return True
+    return False
+
+
+@app.post("/api/harness/scope-check")
+async def harness_scope_check(request: Request):
+    """校验某 URL 是否在授权靶标范围内（供前端提前拦截）。"""
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    scope = body.get("scope") or []
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    return JSONResponse({"ok": True, "host": host, "in_scope": _host_in_scope(host, scope)})
+
+
+@app.post("/api/harness/probe")
+async def harness_probe(request: Request):
+    """靶场主动探测：在用户声明的授权靶标范围内，向目标发构造 HTTP 请求并观察响应。
+
+    安全闸门：target 的 host 必须落在 scope（前端带来的授权靶标列表）内，否则拒绝——
+    防止 AI 越界探测未授权第三方站点（SSRF / 越权测试）。
+    """
+    body = await request.json()
+    target = (body.get("target") or "").strip()
+    method = (body.get("method") or "GET").upper()
+    path = body.get("path") or "/"
+    headers_in = body.get("headers") or {}
+    payload = body.get("body") or ""
+    scope = body.get("scope") or []
+    try:
+        timeout = min(float(body.get("timeout") or 8), 20)
+    except Exception:
+        timeout = 8
+    if not target.startswith(("http://", "https://")):
+        target = "https://" + target
+    from urllib.parse import urlparse
+    host = urlparse(target).hostname or ""
+    if not host:
+        return JSONResponse({"ok": False, "error": "无法解析目标主机"})
+    if not _host_in_scope(host, scope):
+        return JSONResponse({"ok": False,
+                             "error": "目标不在授权靶标范围内，请先在「靶场空间」声明该靶标并确认授权后再探测。"})
+    allowed = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+    if method not in allowed:
+        return JSONResponse({"ok": False, "error": f"不支持的方法 {method}"})
+    try:
+        import time as _t
+        h = {"User-Agent": "AI-Harness-Research/1.0"}
+        if isinstance(headers_in, dict):
+            for k, v in headers_in.items():
+                h[str(k)] = str(v)
+        body_bytes = payload.encode() if isinstance(payload, str) else b""
+        has_body = method in ("POST", "PUT", "PATCH", "DELETE")
+        t0 = _t.time()
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, max_redirects=3) as client:
+            full = target.rstrip("/") + (path if path.startswith("/") else "/" + path)
+            r = await client.request(method, full, headers=h,
+                                    content=body_bytes if has_body else None)
+            elapsed = int((_t.time() - t0) * 1000)
+            resp_headers = {k: v for k, v in r.headers.items()}
+            preview = r.text[:20000]
+            return JSONResponse({
+                "ok": True,
+                "status": r.status_code,
+                "method": method,
+                "url": str(r.url),
+                "headers": resp_headers,
+                "body_preview": preview,
+                "length": len(r.content),
+                "time_ms": elapsed,
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:400]})
+
+
 # ---------------- AI 生图（OpenAI images 协议） ----------------
 @app.post("/api/generate-image")
 async def generate_image(request: Request):
