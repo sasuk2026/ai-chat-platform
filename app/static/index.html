@@ -370,6 +370,8 @@ img.gen-img:hover { filter: brightness(1.02); }
       </select>
       <label>模型端点 URL</label>
       <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
+      <label>模型名（该接口调用的 model 名）</label>
+      <input id="mtModelName" placeholder="如 gpt-4o-mini / qwen-plus / flux-dev">
       <label>API Key（端点需要鉴权时必填）</label>
       <input id="mtKey" type="password" placeholder="sk-...（探测时自动注入 Authorization 头，仅存本地）">
       <label>授权说明（必填）</label>
@@ -610,7 +612,7 @@ const HARNESS_TOOL_SYS = '【研究所模式 · AI harness（网络安全研究�
 '<<<HARNESS\naction=target\nop=add\nurl=https://靶标\nnote=授权说明（必填）\nHARNESS>>>\n（op=remove 可撤回。只有被 add 过的靶标才允许被探测）\n' +
 '<<<HARNESS\naction=probe\ntarget=靶标主机或URL\nmethod=GET\npath=/\nheaders=可选JSON\nbody=可选\nHARNESS>>>\n（向已授权靶标发构造请求并观察响应；method 支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）\n' +
 '【模型靶向（打模型）】除网站外，也可把"模型"作为研究对象：生图模型或文字模型，攻击面分三类——前端（输入校验/越权/提示注入/越狱）、后端（处理逻辑/解析/越权执行/工具调用）、侧攻击（计时/资源/并发等侧通道）。声明模型靶标并开始：\n' +
-'<<<HARNESS\naction=target\nop=add\nurl=https://模型端点\ntype=model\nmodel_type=image|text\nvector=front|back|side\ngoal=预期效果（如"验证能否越权读取他人图片/绕过内容审核"）\nnote=授权说明\nHARNESS>>>\n' +
+'<<<HARNESS\naction=target\nop=add\nurl=https://模型端点\ntype=model\nmodel_type=image|text\nmodel_name=该接口调用的模型名（如gpt-4o-mini）\nvector=front|back|side\ngoal=预期效果（如"验证能否越权读取他人图片/绕过内容审核"）\nnote=授权说明\nHARNESS>>>\n' + +
 '侧通道计时：probe 加 repeat=N（如 repeat=20）可重复请求并回传 min/avg/max 耗时，用于发现时序差异。\n' +
 '【工作流】\n' +
 '1) 情报搜集：用 intel 搜索关键词、抓取关键网页/文档，整理背景与攻击面/防御面。\n' +
@@ -982,7 +984,7 @@ function parseHarnessBlock(raw) {
     const t2 = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/,\s*([}\]])/g, '$1');
     const j = JSON.parse(t2); if (j && j.action) return j;
   } catch (e) {}
-  const KEYS = 'action|op|query|fetch|url|target|method|path|headers|body|note|type|vector|goal|model_type|attack_surface|repeat';
+  const KEYS = 'action|op|query|fetch|url|target|method|path|headers|body|note|type|vector|goal|model_type|model_name|attack_surface|repeat';
   const obj = {};
   t.split('\n').forEach(function (ln) {
     const m = ln.match(new RegExp('^\\s*(' + KEYS + ')\\s*[:=]\\s*(.*)$'));
@@ -1035,6 +1037,7 @@ async function applyHarnessAction(a) {
     const ttype = String(a.type || 'site').toLowerCase();   // site | model
     const vector = a.vector || a.attack_surface || '';
     const goal = a.goal || '';
+    const modelName = a.model_name || '';
     if (!url) return '❌ target 缺少 url';
     let host = '';
     try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { return '❌ 靶标地址无法解析：' + url; }
@@ -1051,12 +1054,12 @@ async function applyHarnessAction(a) {
     if (!note) return '❌ 声明靶标必须填写授权说明 note（安全护栏：确认你已获授权）';
     if (list.some(s => s.host === host)) return '⚠️ ' + host + ' 已在授权列表中';
     const item = { host: host, url: url, note: note, type: ttype };
-    if (ttype === 'model') { item.vector = vector; item.goal = goal; item.model_type = a.model_type || ''; }
+    if (ttype === 'model') { item.vector = vector; item.goal = goal; item.model_type = a.model_type || ''; item.model_name = modelName; }
     list.push(item);
     if (conv) { conv.scope = list; Store.saveConv(conv); }
     renderScope();
     let extra = '';
-    if (ttype === 'model') extra = '（模型靶向：' + (item.model_type || '未指定') + ' · 攻击面=' + (vector || '未指定') + (goal ? ' · 预期效果=' + goal : '') + '）';
+    if (ttype === 'model') extra = '（模型靶向：' + (modelName || item.model_type || '未指定') + ' · 攻击面=' + (vector || '未指定') + (goal ? ' · 预期效果=' + goal : '') + '）';
     updateHarnessSession({ action: 'target', host: host, type: ttype });
     return '✅ 已声明靶标 ' + host + '（授权说明：' + note + '）' + extra + '。AI 现在可以对该靶标做主动探测/模型研究。';
   }
@@ -2545,7 +2548,7 @@ function renderScope() {
   box.innerHTML = list.map((s, i) => {
     const isModel = s.type === 'model';
     const badge = isModel
-      ? '<span class="hp-badge">🤖 模型·' + esc(s.model_type || '?') + '·' + esc(s.vector || '?') + '</span>'
+      ? '<span class="hp-badge">🤖 ' + esc(s.model_name || s.model_type || '?') + '·' + esc(s.vector || '?') + '</span>'
       : '<span class="hp-badge site">🌐 网站</span>';
     const keyBadge = s.api_key ? '<span class="hp-badge site">🔑 已带Key</span>' : '';
     return '<div class="hp-target' + (isModel ? ' model' : '') + '"><span class="x" data-i="' + i + '" title="撤回授权">×</span>' +
@@ -2645,10 +2648,12 @@ function startModelTarget() {
   const mt = $('#mtType').value;
   const vec = $('#mtVector').value;
   const url = $('#mtUrl').value.trim();
+  const modelName = $('#mtModelName').value.trim();
   const apiKey = $('#mtKey').value.trim();
   const note = $('#mtNote').value.trim();
   const goal = $('#mtGoal').value.trim();
   if (!url) { setStatus('⚠️ 请填写模型端点 URL'); return; }
+  if (!modelName) { setStatus('⚠️ 请填写靶向模型名（该接口调用的 model 名）'); return; }
   if (!apiKey) { setStatus('⚠️ 靶向模型也需要 API Key，请在「模型靶向」里填写'); return; }
   if (!note) { setStatus('⚠️ 必须填写授权说明（安全护栏）'); return; }
   let host = '';
@@ -2656,7 +2661,7 @@ function startModelTarget() {
   if (!host) { setStatus('⚠️ 模型端点无法解析'); return; }
   const list = scopeData();
   if (!list.some(function (s) { return s.host === host; })) {
-    list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt, api_key: apiKey });
+    list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt, api_key: apiKey, model_name: modelName });
     if (conv) { conv.scope = list; Store.saveConv(conv); }
     renderScope();
   }
@@ -2665,6 +2670,7 @@ function startModelTarget() {
     '· 模型类型：' + (mt === 'image' ? '生图模型' : '文字模型') + '\n' +
     '· 攻击面：' + vecText + '\n' +
     '· 目标端点：' + url + '\n' +
+    '· 模型名：' + modelName + '（POST 探测时请把它放入请求体 body 的 "model" 字段，例如 {"model": "' + modelName + '"}）\n' +
     '· 鉴权：该端点已登记 API Key，probe 时平台会自动附加 Authorization 头，你无需（也不应）在 headers 里明文携带 key\n' +
     '· 预期效果：' + (goal || '（用户未填，请先确认研究目标）') + '\n' +
     '· 授权说明：' + note + '\n' +
