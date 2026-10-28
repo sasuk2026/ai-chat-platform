@@ -745,11 +745,33 @@ async function runChatStream(messages, tools, el, box, state, opts) {
     body.enable_thinking = true;
     body.chat_template_kwargs = { enable_thinking: true };
   }
-  const resp = await fetch('/api/chat', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body), signal: controller.signal,
-  });
+  // 网络保护：连接最长等 90 秒、流式空闲最长 120 秒，超时自动中止
+  //（防止手机断网/切后台/服务冷启动时请求永久挂起 → busy 卡死、界面“没有下文”）
+  let timedOut = false;
+  const inner = new AbortController();
+  const _onOuterAbort = function () { inner.abort(); };
+  if (controller) {
+    if (controller.signal.aborted) inner.abort();
+    else controller.signal.addEventListener('abort', _onOuterAbort, { once: true });
+  }
+  let _timer = setTimeout(function () { timedOut = true; inner.abort(); }, 90000);
+  const _rearm = function () { clearTimeout(_timer); _timer = setTimeout(function () { timedOut = true; inner.abort(); }, 120000); };
+  let resp;
+  try {
+    resp = await fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: inner.signal,
+    });
+  } catch (e) {
+    clearTimeout(_timer);
+    if (controller) controller.signal.removeEventListener('abort', _onOuterAbort);
+    if (timedOut) return { error: '请求超时（连接 90 秒无响应：网络中断或服务冷启动中，请点「继续」重试）' };
+    throw e;
+  }
+  _rearm();
   if (!resp.ok) {
+    clearTimeout(_timer);
+    if (controller) controller.signal.removeEventListener('abort', _onOuterAbort);
     const t = await resp.text();
     return { error: 'HTTP ' + resp.status + ': ' + t.slice(0, 200) };
   }
@@ -765,8 +787,15 @@ async function runChatStream(messages, tools, el, box, state, opts) {
   let violation = null;              // 'think' | 'answer'
   let thinkTail = '', ansTail = '';
   while (true) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try { chunk = await reader.read(); }
+    catch (e) {
+      if (timedOut) { acc += (acc ? '\n\n' : '') + '❌ 响应中断（流式空闲超时，网络可能已断开。进度已自动保存，发「继续」即可接着研究）'; break; }
+      throw e;
+    }
+    const { done, value } = chunk;
     if (done || stopFlag) break;
+    _rearm();
     buf += dec.decode(value, { stream: true });
     const parts = buf.split('\n\n');
     buf = parts.pop();
@@ -821,6 +850,8 @@ async function runChatStream(messages, tools, el, box, state, opts) {
     }
     if (violation) break;
   }
+  clearTimeout(_timer);
+  if (controller) controller.signal.removeEventListener('abort', _onOuterAbort);
   if (violation) {
     // 强制中断：立即中止请求（省 token、停思考），废弃本次输出，上层将强制重新直接作答
     try { controller.abort(); } catch (e) {}
@@ -2206,9 +2237,23 @@ async function generate(isFreshSend) {
     while (toolIter < (devFlow || harnessFlow ? 20 : 4)) {
       if (stopFlag) break;   // 用户点了停止：立即结束，不再发新请求
       // strictTries>0 说明这是违抗后的强制重试：本轮强制关闭推理，从源头停止思考
-      const r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box, imgState,
+      let r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box, imgState,
         Object.assign({ ansWindow: strictAnsWindow }, strictTries > 0 ? { forceNoThink: true } : null));
-      if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error; break; }
+      if (r.error) {
+        // 网络抖动/超时/服务端临时错误 → 自动重试一次（研究所断网自动接上，不用手动催）
+        const _netErr = /Failed to fetch|超时|HTTP 5\d\d|HTTP 429|network/i.test(r.error);
+        if (_netErr && !stopFlag) {
+          setStatus('⚠️ 网络波动（' + r.error.slice(0, 60) + '），8 秒后自动重试…');
+          await new Promise(function (s) { setTimeout(s, 8000); });
+          if (!stopFlag) {
+            controller = new AbortController();
+            r = await runChatStream(messages, (settings.apiKey && plugIntent) ? PLUGIN_TOOLS : null, el, box, imgState,
+              Object.assign({ ansWindow: strictAnsWindow }, strictTries > 0 ? { forceNoThink: true } : null));
+            if (!r.error) setStatus('');
+          }
+        }
+        if (r.error) { finalText += (finalText ? '\n\n' : '') + '❌ ' + r.error + '\n\n> 💡 网络中断不会丢进度：研究所进度已自动保存，直接发「继续」即可从断点接着研究。'; break; }
+      }
       // 强制服从：思考/正文出现拒绝或脱离人设倾向 → 废弃本次输出，强制「停止思考、直接按人设输出」
       // 反复重试直到不再出现拒绝为止（每次都在系统消息里明确告诉 AI：你不能这么拒绝）
       if (r.violation) {
@@ -2395,9 +2440,11 @@ async function callChatOnce(msgs, temp) {
     apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
     temperature: (temp === undefined ? 0.2 : temp), messages: msgs, search: false,
   };
+  // 超时兜底：90 秒无响应自动放弃（搜索意图只是辅助步骤，失败返回空串即可，不能卡死主流程）
+  const _sig = (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(90000) : undefined;
   const resp = await fetch('/api/chat', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body), signal: controller.signal,
+    body: JSON.stringify(body), signal: _sig || controller.signal,
   });
   if (!resp.ok) return '';
   const reader = resp.body.getReader(); const dec = new TextDecoder();
