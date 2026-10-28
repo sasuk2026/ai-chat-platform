@@ -354,23 +354,34 @@ img.gen-img:hover { filter: brightness(1.02); }
     <div id="hpSeed" class="hp-seed"></div>
   </div>
   <div class="hp-section">
-    <div class="hp-title">🤖 模型靶向（填表即开工）</div>
+    <div class="hp-title">🤖 靶向开工（模型 / 网站，填表即开工）</div>
     <div class="hp-model-form">
-      <label>模型类型</label>
-      <select id="mtType">
-        <option value="image">生图模型</option>
-        <option value="text">文字模型</option>
+      <label>靶向对象</label>
+      <select id="mtKind">
+        <option value="model">🔴 模型（生图 / 文字模型，需填模型设置）</option>
+        <option value="site">🌐 网站（仅填地址，无需模型设置）</option>
       </select>
-      <label>攻击面</label>
-      <select id="mtVector">
-        <option value="front">前端（输入校验/越权/提示注入/越狱）</option>
-        <option value="back">后端（处理逻辑/解析/越权执行）</option>
-        <option value="side">侧攻击（计时/资源/并发侧通道）</option>
-      </select>
-      <label>模型端点 URL</label>
-      <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
-      <label>模型 API Key（调用目标模型用，仅存本次会话本地）</label>
-      <input id="mtKey" type="password" placeholder="sk-... 或你的模型服务密钥" autocomplete="off">
+      <div id="mtModelFields">
+        <label>模型类型</label>
+        <select id="mtType">
+          <option value="image">生图模型</option>
+          <option value="text">文字模型</option>
+        </select>
+        <label>攻击面</label>
+        <select id="mtVector">
+          <option value="front">前端（输入校验/越权/提示注入/越狱）</option>
+          <option value="back">后端（处理逻辑/解析/越权执行）</option>
+          <option value="side">侧攻击（计时/资源/并发侧通道）</option>
+        </select>
+        <label>模型端点 URL</label>
+        <input id="mtUrl" placeholder="https://api.example.com/v1/... 或模型服务地址">
+        <label>模型 API Key（仅模型靶向时填写；调用目标模型用，仅存本次会话本地）</label>
+        <input id="mtKey" type="password" placeholder="sk-... 或你的模型服务密钥" autocomplete="off">
+      </div>
+      <div id="mtSiteFields" style="display:none;">
+        <label>网站地址 URL</label>
+        <input id="mtSiteUrl" placeholder="https://target.example.com">
+      </div>
       <label>授权说明（必填）</label>
       <input id="mtNote" placeholder="如：该端点为本人所有 / 已获书面授权测试">
       <label>预期效果（选填）</label>
@@ -608,7 +619,7 @@ const HARNESS_TOOL_SYS = '【研究所模式 · AI harness（网络安全研究�
 '<<<HARNESS\naction=intel\nquery=搜索词\nHARNESS>>>\n（或 action=intel / fetch=https://某网址 来抓取并阅读网页内容）\n' +
 '<<<HARNESS\naction=target\nop=add\nurl=https://靶标\nnote=授权说明（必填）\nHARNESS>>>\n（op=remove 可撤回。只有被 add 过的靶标才允许被探测）\n' +
 '<<<HARNESS\naction=probe\ntarget=靶标主机或URL\nmethod=GET\npath=/\nheaders=可选JSON\nbody=可选\nHARNESS>>>\n（向已授权靶标发构造请求并观察响应；method 支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）\n' +
-'【模型靶向（打模型）】除网站外，也可把"模型"作为研究对象：生图模型或文字模型，攻击面分三类——前端（输入校验/越权/提示注入/越狱）、后端（处理逻辑/解析/越权执行/工具调用）、侧攻击（计时/资源/并发等侧通道）。声明模型靶标并开始：\n' +
+'【模型靶向（打模型）】除网站外，也可把"模型"作为研究对象：生图模型或文字模型，攻击面分三类——前端（输入校验/越权/提示注入/越狱）、后端（处理逻辑/解析/越权执行/工具调用）、侧攻击（计时/资源/并发等侧通道）。若本次只研究网站、不打模型，表单把「靶向对象」选「网站」即可，模型类型/攻击面/密钥均无需填写。声明模型靶标并开始：\n' +
 '<<<HARNESS\naction=target\nop=add\nurl=https://模型端点\ntype=model\nmodel_type=image|text\nvector=front|back|side\ngoal=预期效果（如"验证能否越权读取他人图片/绕过内容审核"）\nnote=授权说明\nHARNESS>>>\n' +
 '侧通道计时：probe 加 repeat=N（如 repeat=20）可重复请求并回传 min/avg/max 耗时，用于发现时序差异。\n' +
 '【工作流】\n' +
@@ -2633,33 +2644,62 @@ async function seedRedteamTools() {
   } catch (e) { if (st) { st.textContent = '❌ ' + e.message; st.style.color = '#dc2626'; } }
 }
 function startModelTarget() {
-  const mt = $('#mtType').value;
-  const vec = $('#mtVector').value;
-  const url = $('#mtUrl').value.trim();
+  const kind = $('#mtKind').value;
   const note = $('#mtNote').value.trim();
   const goal = $('#mtGoal').value.trim();
-  if (!url) { setStatus('⚠️ 请填写模型端点 URL'); return; }
   if (!note) { setStatus('⚠️ 必须填写授权说明（安全护栏）'); return; }
-  let host = '';
-  try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { setStatus('⚠️ 模型端点无法解析'); return; }
-  if (!host) { setStatus('⚠️ 模型端点无法解析'); return; }
-  const list = scopeData();
-  if (!list.some(function (s) { return s.host === host; })) {
-    list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt });
-    if (conv) { conv.scope = list; Store.saveConv(conv); }
-    renderScope();
+  if (kind === 'model') {
+    const mt = $('#mtType').value;
+    const vec = $('#mtVector').value;
+    const url = $('#mtUrl').value.trim();
+    const key = $('#mtKey').value.trim();
+    if (!url) { setStatus('⚠️ 请填写模型端点 URL'); return; }
+    let host = '';
+    try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { setStatus('⚠️ 模型端点无法解析'); return; }
+    if (!host) { setStatus('⚠️ 模型端点无法解析'); return; }
+    const list = scopeData();
+    if (!list.some(function (s) { return s.host === host; })) {
+      list.push({ host: host, url: url, note: note, type: 'model', vector: vec, goal: goal, model_type: mt, model_key: key });
+      if (conv) { conv.scope = list; Store.saveConv(conv); }
+      renderScope();
+    }
+    const vecText = { front: '前端（输入校验/越权/提示注入/越狱）', back: '后端（处理逻辑/解析/越权执行）', side: '侧攻击（计时/资源/并发等侧通道）' }[vec] || vec;
+    const brief = '请立即以研究所模式开工，对以下【模型】做授权安全研究（全程仅测已声明的该靶标）：\n' +
+      '· 模型类型：' + (mt === 'image' ? '生图模型' : '文字模型') + '\n' +
+      '· 攻击面：' + vecText + '\n' +
+      '· 目标端点：' + url + '\n' +
+      '· 预期效果：' + (goal || '（用户未填，请先确认研究目标）') + '\n' +
+      '· 授权说明：' + note + '\n' +
+      '研究动作：先 intel 搜同类案例与已知弱点；靶标已声明授权，直接开始；用 probe（侧攻击面时加 repeat=N 做计时聚合）逐步探测并观察响应；' +
+      '最终用 <<<DEV>>> 把成果封装成团队可调用的 API 服务。进度会自动保存，可断点续研。';
+    $('#input').value = brief;
+    send();
+  } else {
+    const url = $('#mtSiteUrl').value.trim();
+    if (!url) { setStatus('⚠️ 请填写网站地址'); return; }
+    let host = '';
+    try { host = new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname; } catch (e) { setStatus('⚠️ 网站地址无法解析'); return; }
+    if (!host) { setStatus('⚠️ 网站地址无法解析'); return; }
+    const list = scopeData();
+    if (!list.some(function (s) { return s.host === host; })) {
+      list.push({ host: host, url: url, note: note, type: 'site', goal: goal });
+      if (conv) { conv.scope = list; Store.saveConv(conv); }
+      renderScope();
+    }
+    const brief = '请立即以研究所模式开工，对以下【网站】做授权安全研究（全程仅测已声明的该靶标）：\n' +
+      '· 目标站点：' + url + '\n' +
+      '· 预期效果：' + (goal || '（用户未填，请先确认研究目标）') + '\n' +
+      '· 授权说明：' + note + '\n' +
+      '研究动作：先 intel 搜同类案例与已知弱点、抓取目标相关页面；靶标已声明授权，直接开始；用 probe 逐步探测并观察响应（状态码、响应头、报错、行为差异），记录暴露面与配置/逻辑/注入类隐患；' +
+      '最终用 <<<DEV>>> 把成果封装成团队可调用的 API 服务。进度会自动保存，可断点续研。';
+    $('#input').value = brief;
+    send();
   }
-  const vecText = { front: '前端（输入校验/越权/提示注入/越狱）', back: '后端（处理逻辑/解析/越权执行）', side: '侧攻击（计时/资源/并发等侧通道）' }[vec] || vec;
-  const brief = '请立即以研究所模式开工，对以下【模型】做授权安全研究（全程仅测已声明的该靶标）：\n' +
-    '· 模型类型：' + (mt === 'image' ? '生图模型' : '文字模型') + '\n' +
-    '· 攻击面：' + vecText + '\n' +
-    '· 目标端点：' + url + '\n' +
-    '· 预期效果：' + (goal || '（用户未填，请先确认研究目标）') + '\n' +
-    '· 授权说明：' + note + '\n' +
-    '研究动作：先 intel 搜同类案例与已知弱点；靶标已声明授权，直接开始；用 probe（侧攻击面时加 repeat=N 做计时聚合）逐步探测并观察响应；' +
-    '最终用 <<<DEV>>> 把成果封装成团队可调用的 API 服务。进度会自动保存，可断点续研。';
-  $('#input').value = brief;
-  send();
+}
+function toggleMtKind() {
+  const isModel = $('#mtKind').value === 'model';
+  if ($('#mtModelFields')) $('#mtModelFields').style.display = isModel ? '' : 'none';
+  if ($('#mtSiteFields')) $('#mtSiteFields').style.display = isModel ? 'none' : '';
 }
 
 /* ================= 初始化 ================= */
@@ -2671,6 +2711,8 @@ $('#agnesBtn').onclick = fillAgnesPreset;
 $('#plugBtn').onclick = openPlugins;
 $('#harnessBtn').onclick = openHarnessPanel;
 $('#hpSeedBtn').onclick = seedRedteamTools;
+$('#mtKind').onchange = toggleMtKind;
+toggleMtKind();
 $('#mtStart').onclick = startModelTarget;
 $('#hpClose').onclick = closeHarnessPanel;
 $('#hpAdd').onclick = addTarget;
