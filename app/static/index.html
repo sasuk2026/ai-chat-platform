@@ -628,6 +628,12 @@ const HARNESS_TOOL_SYS = '【研究所模式 · AI harness（网络安全研究�
 '3) 主动探测：用 probe 对授权靶标发请求，观察状态码、响应头、报错、行为差异，记录发现。只测已声明靶标。\n' +
 '4) 产出与发布：研究成型后，用 <<<DEV>>> 协议把成果写成一个 FastAPI 服务（在用户的 GitHub 仓库里 write_file 创建 main.py / requirements.txt），再用 DEV 的 publish 动作经 Render 发布成网站；部署成功后把「团队可调用的 API 地址」告诉用户。\n' +
 '5) 断点续研：研究进度会自动保存，断网/刷新/中途停止后重新进入会从断点继续，不要从头重来；续研时先读回已执行步骤再继续。\n' +
+'6) 严禁重复：每轮只能推进到「新的研究步骤」，已执行过的相同动作（同一 intel 查询 / 同一 probe 靶点 / 同一 target）禁止再次执行；若研究已成型就直接输出结论总结并停止，不要原地打转。\n' +
+'【目标内 API 敏感度（重点增强）】研究靶标时，要特别敏感于「目标自身调用的内部 API」——这是靶标真正的风险面，往往比首页更重要：\n' +
+'  · 网站靶标：抓取页面/资源后，从 HTML、JS 源码、响应头与报错里寻找目标引用的内部 API 端点（如 `https://api.xxx.com`、`/api/...`、`/v1/...`、`/graphql`、CORS `Access-Control-Allow-Origin` 暴露的后端域、重定向/错误回显里泄露的 `/internal/...` 路径）。对这些发现的 API 域/路径，若落在授权范围内，继续用 probe 深挖。\n' +
+'  · 模型靶标（尤其后端/侧攻击面）：敏感于目标模型背后调用的工具与下游 API（function calling / tool use 触发的请求、对外部服务的调用）；通过构造输入观察它是否对外发起请求、调用了哪些接口、参数如何传递。\n' +
+'  · 把发现的 API 端点、鉴权方式（header/query/body 中的 token）、数据格式记入暴露面。\n' +
+'  · probe 响应已自动回传 `api_hints`（从响应头/正文扫描出的疑似 API 路径与内部域名）与 `interesting_headers`（server/x-powered-by/CORS 等），请优先解读这些信号并据此决定下一步探测。\n' +
 '【铁律（最高优先，违反即作废）】\n' +
 '1) 只能探测/操作用户在靶场空间里「声明并授权」的靶标；任何未声明的第三方站点，必须先让用户用 target/add 声明授权，否则拒绝并提示。\n' +
 '2) 主动探测只做「观察响应」级别——发构造请求并读取回显；不得执行破坏性利用、不得写入/删除目标数据、不得对目标造成拒服；高危动作（写方法/大载荷/批量）前先暂停，等用户确认。\n' +
@@ -1123,8 +1129,12 @@ async function applyHarnessAction(a) {
         return '❌ 探测被拒绝：' + (j.error || '未知') + '（若你确已获授权，请先用 target/add 声明该靶标）';
       }
       const heads = Object.keys(j.headers || {}).slice(0, 12).map(k => k + ': ' + j.headers[k]).join('\n');
-      logProbe('ok', '✓ 状态码 ' + j.status + ' · ' + j.time_ms + 'ms · ' + j.length + ' 字节' + (heads ? '\n' + heads : ''));
-      return '✅ 探测成功：' + method + ' ' + (j.url || target) + '\n状态码 ' + j.status + ' · ' + j.time_ms + 'ms · ' + j.length + ' 字节\n响应头：\n' + (heads || '(无)') +
+      const ih = j.interesting_headers || {};
+      const ihTxt = Object.keys(ih).length ? '\n可疑/关键信息头：\n' + Object.keys(ih).slice(0, 10).map(k => k + ': ' + ih[k]).join('\n') : '';
+      const ah = j.api_hints || [];
+      const ahTxt = ah.length ? '\n⚡ 发现目标内疑似 API 端点（' + ah.length + ' 个）：\n' + ah.slice(0, 25).map(function (x) { return '· ' + x; }).join('\n') : '';
+      logProbe('ok', '✓ 状态码 ' + j.status + ' · ' + j.time_ms + 'ms · ' + j.length + ' 字节' + (heads ? '\n' + heads : '') + (ah.length ? '\n⚡API: ' + ah.length + ' 个' : ''));
+      return '✅ 探测成功：' + method + ' ' + (j.url || target) + '\n状态码 ' + j.status + ' · ' + j.time_ms + 'ms · ' + j.length + ' 字节\n响应头：\n' + (heads || '(无)') + ihTxt + ahTxt +
         '\n响应正文前 4000 字：\n' + String(j.body_preview || '').slice(0, 4000);
     } catch (e) {
       logProbe('err', '✗ ' + e.message);
@@ -2232,6 +2242,7 @@ async function generate(isFreshSend) {
   }
   try {
     let toolIter = 0;
+    _dup = { log: [], streak: 0, hit: false };   // 重置动作去重状态（防循环空转）
     const devFlow = !!(devIntent && devReady);   // 建站流程步骤多，放宽迭代上限
     const harnessFlow = !!(harnessIntent && settings.apiKey);   // 研究所流程同样步骤多，放宽迭代上限（避免多步研究被掐断）
     while (toolIter < (devFlow || harnessFlow ? 20 : 4)) {
@@ -2287,7 +2298,12 @@ async function generate(isFreshSend) {
         continue;
       }
       if (acts.actions.length) {
-        const results = acts.actions.map(applyPluginAction);
+        const results = [];
+        for (const pa of acts.actions) {
+          const sig = actionSig(pa);
+          if (dupCheck(sig)) { results.push('⚠️ 重复拦截：插件动作「' + sig + '」已执行过，已跳过（重复第 ' + _dup.streak + ' 次）。'); if (_dup.hit) break; continue; }
+          results.push(applyPluginAction(pa));
+        }
         finalText = acts.cleaned;
         messages.push({ role: 'assistant', content: r.content || '' });
         var snap = '';
@@ -2296,9 +2312,11 @@ async function generate(isFreshSend) {
             return '名称：' + p.name + '（' + (p.enabled ? '启用中' : '停用中') + '）\n正文：\n' + (p.content || '').slice(0, 5000);
           }).join('\n\n');
         }
-        messages.push({ role: 'user', content: '【系统回执】插件指令执行结果：\n' + results.join('\n') + '\n请基于以上结果继续：若已全部完成，用一句话向用户确认；若还需要动作，继续输出指令块。' + snap });
+        const pExtra = _dup.hit ? '\n【系统提示】检测到连续重复相同动作，本轮已停止以避免空转。' : (_dup.streak > 0 ? '\n请勿重复已执行过的插件动作。' : '');
+        messages.push({ role: 'user', content: '【系统回执】插件指令执行结果：\n' + results.join('\n') + '\n请基于以上结果继续：若已全部完成，用一句话向用户确认；若还需要动作，继续输出指令块（不要重复已做过的）。' + snap + pExtra });
         const bubble = el.querySelector('.bubble');
         if (bubble) bubble.innerHTML = imgState.prog + renderMD(finalText + '\n\n⚙️ 正在执行插件指令…');
+        if (_dup.hit) break;
         toolIter++;
         continue;
       }
@@ -2366,15 +2384,20 @@ async function generate(isFreshSend) {
         const bubble = el.querySelector('.bubble');
         if (bubble) bubble.innerHTML = imgState.prog + renderMD(finalText);
         const devResults = [];
+        let dupSkip = 0;
         for (const da of devActs.actions.slice(0, 4)) {
+          const sig = actionSig(da);
+          if (dupCheck(sig)) { dupSkip++; devResults.push('⚠️ 重复拦截：建站动作「' + sig + '」已执行过，已跳过（重复第 ' + _dup.streak + ' 次）。'); if (_dup.hit) break; continue; }
           const res = await applyDevAction(da, devLog);
           devResults.push(res);
           updateDevSession(da, res);   // 续建：把每步真实结果写进进度快照
           const b2 = el.querySelector('.bubble');
           if (b2) b2.innerHTML = imgState.prog + renderMD(finalText) + imgState.extra;
         }
+        const dExtra = _dup.hit ? '\n【系统提示】检测到连续重复相同动作，本轮已停止以避免空转。' : (dupSkip ? '\n请勿重复已执行的建站动作，必须推进到下一步。' : '');
         messages.push({ role: 'user', content: '【系统回执】建站指令执行结果：\n' + devResults.join('\n') +
-          '\n请基于以上真实结果继续：未完成的步骤继续输出指令块；全部完成后向用户汇报真实结果（仓库地址、网站 URL、部署状态）。严禁编造 URL。' });
+          '\n请基于以上真实结果继续：未完成的步骤继续输出指令块；全部完成后向用户汇报真实结果（仓库地址、网站 URL、部署状态）。严禁编造 URL。' + dExtra });
+        if (_dup.hit) break;
         toolIter++;
         continue;
       }
@@ -2393,14 +2416,27 @@ async function generate(isFreshSend) {
         const bubble = el.querySelector('.bubble');
         if (bubble) bubble.innerHTML = imgState.prog + renderMD(finalText + '\n\n🧪 正在执行研究指令…');
         const hsResults = [];
+        let dupSkip = 0;
         for (const ha of hsActs.actions.slice(0, 6)) {
+          const sig = actionSig(ha);
+          if (dupCheck(sig)) {
+            dupSkip++;
+            hsResults.push('⚠️ 重复拦截：动作「' + sig + '」此前已执行过，已跳过（重复第 ' + _dup.streak + ' 次，不重复执行以免空转）。');
+            if (_dup.hit) break;
+            continue;
+          }
           const res = await applyHarnessAction(ha);
           hsResults.push(res);
           updateHarnessSession(ha, res);
         }
         setStatus('');
-        messages.push({ role: 'user', content: '【系统回执】harness 指令执行结果：\n' + hsResults.join('\n') +
-          '\n请基于以上真实结果继续：情报继续整合、未声明靶标先让用户用 target/add 声明授权、已授权靶标可继续 probe 观察响应；研究成型后用 <<<DEV>>> 把成果写成 FastAPI 服务并用 publish 发布成可调用 API。严禁编造 URL 与测试结果。' });
+        let hint = '';
+        if (_dup.hit) hint = '\n【系统提示】检测到连续重复相同动作，本轮已停止以避免空转。请勿重复；发「继续」可推进到新步骤，或自行输出结论总结。';
+        messages.push({ role: 'user', content: '【系统回执】harness 指令执行结果：\n' + hsResults.join('\n') + hint +
+          '\n请基于以上真实结果继续：情报继续整合、未声明靶标先让用户用 target/add 声明授权、已授权靶标继续 probe 观察响应；' +
+          (dupSkip ? '你刚才重复了已执行过的动作，严禁再重复——每轮必须推进到新步骤（新的情报/新的探测点/新的分析），否则就输出总结结论并停止；' : '') +
+          '研究成型后用 <<<DEV>>> 把成果写成 FastAPI 服务并用 publish 发布成可调用 API。严禁编造 URL 与测试结果。' });
+        if (_dup.hit) break;
         toolIter++;
         continue;
       }
@@ -2670,6 +2706,29 @@ function updateHarnessSession(ha, res) {
   if (ha.action === 'target' && ha.host) { harnessSession.target = ha.host; harnessSession.targetType = ha.type || 'site'; harnessSession.vector = ha.vector || ''; }
   if (ha.action === 'intel' && ha.query && !harnessSession.topic) harnessSession.topic = ha.query;
   harnessSession.updatedAt = Date.now();
+}
+// 动作去重签名：用于防止模型重复执行同一动作导致空转循环（"一直循环说同一段话"）
+function actionSig(a) {
+  if (!a) return '?';
+  const t = String(a.action || a.op || '').toLowerCase();
+  const keys = [a.target, a.url, a.query, a.host, a.path, a.method, a.repo, a.prompt, a.model_type, a.type, a.vector]
+    .filter(function (x) { return x !== undefined && x !== null && x !== ''; })
+    .map(String);
+  const bodySig = a.body ? ':' + String(a.body).replace(/\s+/g, '').slice(0, 60) : '';
+  return t + '#' + keys.join('|') + bodySig;
+}
+// 去重状态（每轮 generate 开始时重置）；streak=连续重复次数，hit=已达停止阈值
+let _dup = { log: [], streak: 0, hit: false };
+// 检查某动作是否重复；重复则累计 streak，连续重复 >=3 次置 hit（外层据此 break 防空转）
+function dupCheck(sig) {
+  if (_dup.log.indexOf(sig) >= 0) {
+    _dup.streak++;
+    if (_dup.streak >= 3) _dup.hit = true;
+    return true;
+  }
+  _dup.streak = 0;
+  _dup.log.push(sig);
+  return false;
 }
 async function seedRedteamTools() {
   const st = $('#hpSeed');
