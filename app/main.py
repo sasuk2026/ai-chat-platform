@@ -835,12 +835,46 @@ async def harness_probe(request: Request):
         elapsed = timings[-1]
         resp_headers = {k: v for k, v in last.headers.items()}
         preview = last.text[:20000]
+        # 目标内调用的 API 敏感度：从响应头 + 正文里扫描目标自身引用的内部 API 端点/后端域，
+        # 帮助研究所模式发现靶标真正的风险面（比首页更重要）。
+        import re as _re
+        _hint_patterns = [
+            r'/api/[A-Za-z0-9_][A-Za-z0-9_./-]*', r'/v[0-9]+/[A-Za-z0-9_./-]+',
+            r'/graphql', r'/gql', r'/internal/[A-Za-z0-9_./-]+', r'/admin/[A-Za-z0-9_./-]+',
+            r'/rpc', r'/rest/[A-Za-z0-9_./-]*', r'/swagger', r'/openapi', r'/oauth',
+            r'/auth', r'/login', r'/upload', r'/webhook', r'/callback', r'/ws', r'/sse',
+            r'https?://[A-Za-z0-9.-]*api\.[A-Za-z0-9.-]+',
+            r'https?://[A-Za-z0-9.-]*\.(?![\w-]*\.(com|cn|org|net|io|gov|edu))',
+            r'(?:endpoint|api[_-]?base|base[_-]?url)\s*[:=]\s*["\']?https?://[^\s"\']+',
+            r'POST\s+[A-Za-z0-9_./\-]+',
+        ]
+        _found = []
+        _seen = set()
+        _blob = str(resp_headers) + "\n" + preview
+        for _p in _hint_patterns:
+            for _m in _re.findall(_p, _blob, _re.I):
+                _m = _m.strip()
+                if not _m or len(_m) > 200:
+                    continue
+                _key = _m.lower()
+                if _key in _seen:
+                    continue
+                _seen.add(_key)
+                _found.append(_m)
+        _interesting_headers = {k: v for k, v in resp_headers.items()
+                                if k.lower() in ('server', 'x-powered-by', 'access-control-allow-origin',
+                                                 'x-frame-options', 'content-security-policy', 'x-amzn-requestid',
+                                                 'x-request-id', 'x-cache', 'via', 'x-aspnet-version',
+                                                 'x-generated-by', 'x-dns-prefetch-control')}
         out = {
             "ok": True,
             "status": last.status_code,
             "method": method,
             "url": str(last.url),
+            "final_url": str(last.url),
             "headers": resp_headers,
+            "interesting_headers": _interesting_headers,
+            "api_hints": _found[:40],
             "body_preview": preview,
             "length": len(last.content),
             "time_ms": elapsed,
