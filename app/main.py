@@ -945,6 +945,7 @@ async def paste_org(request: Request):
             token = tok_m.group(1) if tok_m else ""
 
             # 收集表单内所有字段（input/textarea/select），保留其默认值
+            field_names = []
             data = {}
             for m in re.finditer(r'name=["\']([^"\']+)["\'](?:\s+value=["\']([^"\']*)["\'])?', form_html):
                 k = m.group(1)
@@ -954,6 +955,7 @@ async def paste_org(request: Request):
                 # 跳过纯提交按钮字段，避免干扰
                 if k.lower() in ("submit", "button", "create", "save", "preview"):
                     continue
+                field_names.append(k)
                 data.setdefault(k, v)
             data["_token"] = token
 
@@ -972,9 +974,12 @@ async def paste_org(request: Request):
             r = await client.post(post_url, data=data)
             url = str(r.url)
             path = url.split("paste.org")[-1].rstrip("/")
-            if r.status_code in (200, 302) and "paste.org" in url and re.search(r"/[A-Za-z0-9_\-]{3,}", path):
+            # 排除静态资源 / 站点路径，只认像 /<id> 或 /view/<id> 的真实粘贴页
+            bad = re.search(r"/(assets|css|js|img|static|api|fonts|vendor|favicon|robots|cdn-cgi)", path)
+            real_paste = re.search(r"/(view/)?[A-Za-z0-9]{6,}", path)
+            if r.status_code in (200, 302) and "paste.org" in url and real_paste and not bad:
                 return JSONResponse({"ok": True, "url": url})
-            m2 = re.search(r"(?:https?://)?paste\.org/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)?", r.text)
+            m2 = re.search(r"(?:https?://)?paste\.org/(?!assets|css|js|img|static|api|fonts|vendor|favicon|robots|cdn-cgi)[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)?", r.text)
             if m2:
                 u = m2.group(0)
                 if not u.startswith("http"):
@@ -983,7 +988,9 @@ async def paste_org(request: Request):
             if "Attention Required" in r.text or "Just a moment" in r.text:
                 return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
             return JSONResponse({"ok": False, "error": "未能从 paste.org 获取链接", "cf": False,
-                                 "debug": {"status": r.status_code, "url": url}})
+                                 "debug": {"status": r.status_code, "url": url,
+                                           "token_found": bool(token), "fields": field_names,
+                                           "snippet": r.text[:300]}})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "cf": False})
 
