@@ -10,6 +10,7 @@
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -903,6 +904,59 @@ async def plugins_seed():
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "items": []})
     return JSONResponse({"ok": True, "items": items})
+
+
+# ---------------- 把文本发布到 paste.org 生成纯文本分享链接 ----------------
+@app.post("/api/paste-org")
+async def paste_org(request: Request):
+    """把单个插件正文发布到 paste.org，返回可分享的纯文本链接（best-effort）。
+
+    注意：paste.org 位于 Cloudflare 之后，服务器侧（数据中心 IP）很可能被拦截，
+    此时返回 {"ok": false, "cf": true}，由前端回退到「浏览器新标签页表单提交」方式。
+    """
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    name = (body.get("name") or "plugin").strip()[:80]
+    if not text:
+        return JSONResponse({"ok": False, "error": "内容为空"})
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
+            # 1) 先 GET 创建页，拿到 CSRF token 与会话 cookie
+            g = await client.get("https://paste.org/")
+            gt = g.text
+            if g.status_code != 200 or "Attention Required" in gt or "Just a moment" in gt or "cf-chl" in gt:
+                return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
+            m = re.search(r'name=["\']_token["\']\s+value=["\']([^"\']+)', gt) or \
+                re.search(r'value=["\']([^"\']+)["\']\s+name=["\']_token["\']', gt)
+            token = m.group(1) if m else ""
+
+            # 2) POST 创建 paste
+            data = {
+                "_token": token,
+                "content": text,
+                "title": name,
+                "language": "text",
+                "expire": "1 Month",
+                "submit": "Create Paste",
+            }
+            r = await client.post("https://paste.org/", data=data)
+            url = str(r.url)
+            if re.search(r"paste\.org/[A-Za-z0-9_\-]{4,}", url) and "paste.org/" != url.rstrip():
+                return JSONResponse({"ok": True, "url": url})
+            m2 = re.search(r"https?://paste\.org/[A-Za-z0-9_\-]{4,}", r.text)
+            if m2:
+                return JSONResponse({"ok": True, "url": m2.group(1)})
+            if "Attention Required" in r.text or "Just a moment" in r.text:
+                return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
+            return JSONResponse({"ok": False, "error": "未能从 paste.org 获取链接（可能需要登录）", "cf": False})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "cf": False})
 
 
 # ---------------- AI 生图（OpenAI images 协议） ----------------
