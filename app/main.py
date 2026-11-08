@@ -927,34 +927,63 @@ async def paste_org(request: Request):
     }
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
-            # 1) 先 GET 创建页，拿到 CSRF token 与会话 cookie
+            # 1) 先 GET 创建页，拿到 CSRF token / 会话 cookie / 真实表单字段
             g = await client.get("https://paste.org/")
             gt = g.text
             if g.status_code != 200 or "Attention Required" in gt or "Just a moment" in gt or "cf-chl" in gt:
                 return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
-            m = re.search(r'name=["\']_token["\']\s+value=["\']([^"\']+)', gt) or \
-                re.search(r'value=["\']([^"\']+)["\']\s+name=["\']_token["\']', gt)
-            token = m.group(1) if m else ""
 
-            # 2) POST 创建 paste
-            data = {
-                "_token": token,
-                "content": text,
-                "title": name,
-                "language": "text",
-                "expire": "1 Month",
-                "submit": "Create Paste",
-            }
-            r = await client.post("https://paste.org/", data=data)
+            # 2) 解析表单：action、_token、各字段名与默认值
+            from urllib.parse import urljoin
+            fm = re.search(r"<form[^>]*action=[\"']([^\"']*)[\"'][^>]*>(.*?)</form>", gt, re.S | re.I)
+            form_html = fm.group(2) if fm else gt
+            action = fm.group(1) if fm else ""
+            post_url = urljoin("https://paste.org/", action) if action else "https://paste.org/"
+
+            tok_m = re.search(r'name=["\']_token["\']\s+value=["\']([^"\']+)', form_html) or \
+                    re.search(r'value=["\']([^"\']+)["\']\s+name=["\']_token["\']', form_html)
+            token = tok_m.group(1) if tok_m else ""
+
+            # 收集表单内所有字段（input/textarea/select），保留其默认值
+            data = {}
+            for m in re.finditer(r'name=["\']([^"\']+)["\'](?:\s+value=["\']([^"\']*)["\'])?', form_html):
+                k = m.group(1)
+                if k == "_token":
+                    continue
+                v = m.group(2) if m.group(2) is not None else ""
+                # 跳过纯提交按钮字段，避免干扰
+                if k.lower() in ("submit", "button", "create", "save", "preview"):
+                    continue
+                data.setdefault(k, v)
+            data["_token"] = token
+
+            # 找到正文 textarea，填入插件内容；若没有则兜底用 content
+            ta = re.search(r"<textarea[^>]*name=[\"']([^\"']+)[\"']", form_html, re.I)
+            if ta:
+                data[ta.group(1)] = text
+            else:
+                data["content"] = text
+            # 尽量填入标题字段
+            for cand in ("title", "name", "paste_name", "subject"):
+                if cand in data:
+                    data[cand] = name
+
+            # 3) 带着解析出的真实字段 POST 创建 paste
+            r = await client.post(post_url, data=data)
             url = str(r.url)
-            if re.search(r"paste\.org/[A-Za-z0-9_\-]{4,}", url) and "paste.org/" != url.rstrip():
+            path = url.split("paste.org")[-1].rstrip("/")
+            if r.status_code in (200, 302) and "paste.org" in url and re.search(r"/[A-Za-z0-9_\-]{3,}", path):
                 return JSONResponse({"ok": True, "url": url})
-            m2 = re.search(r"https?://paste\.org/[A-Za-z0-9_\-]{4,}", r.text)
+            m2 = re.search(r"(?:https?://)?paste\.org/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)?", r.text)
             if m2:
-                return JSONResponse({"ok": True, "url": m2.group(1)})
+                u = m2.group(0)
+                if not u.startswith("http"):
+                    u = "https://" + u
+                return JSONResponse({"ok": True, "url": u})
             if "Attention Required" in r.text or "Just a moment" in r.text:
                 return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
-            return JSONResponse({"ok": False, "error": "未能从 paste.org 获取链接（可能需要登录）", "cf": False})
+            return JSONResponse({"ok": False, "error": "未能从 paste.org 获取链接", "cf": False,
+                                 "debug": {"status": r.status_code, "url": url}})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "cf": False})
 
