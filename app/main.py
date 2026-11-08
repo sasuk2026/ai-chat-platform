@@ -993,12 +993,23 @@ async def paste_org(request: Request):
                 return JSONResponse({"ok": True, "url": u})
             if "Attention Required" in r.text or "Just a moment" in r.text:
                 return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
+            # 最后一搏：尝试常见 CSRF 字段名 + Referer，看是否突破 403
+            tried = []
+            for cn in ("csrf_token_name", "csrf_token", "_csrf", "csrf", "token", "csrf_test_name"):
+                d2 = dict(data)
+                d2[cn] = "x"
+                try:
+                    rr = await client.post(post_url, data=d2, headers={"Referer": "https://www.paste.org/"})
+                    tried.append({"csrf_field": cn, "status": rr.status_code,
+                                  "url": str(rr.url).split("paste.org")[-1][:40]})
+                except Exception as e:
+                    tried.append({"csrf_field": cn, "err": str(e)[:80]})
             return JSONResponse({"ok": False, "error": "未能从 paste.org 获取链接", "cf": False,
                                  "debug": {"status": r.status_code, "url": url,
-                                           "token_found": bool(token), "csrf_name": csrf_name,
-                                           "csrf_val_head": csrf_val[:20], "fields": field_names,
-                                           "set_cookie": g.headers.get("set-cookie", "")[:200],
-                                           "form_snippet": form_html[:1200]}})
+                                           "fields": field_names,
+                                           "all_cookies": g.headers.get_list("set-cookie"),
+                                           "form_full": form_html[:3000],
+                                           "csrf_probe": tried}})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "cf": False})
 
