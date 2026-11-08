@@ -943,6 +943,12 @@ async def paste_org(request: Request):
             tok_m = re.search(r'name=["\']_token["\']\s+value=["\']([^"\']+)', form_html) or \
                     re.search(r'value=["\']([^"\']+)["\']\s+name=["\']_token["\']', form_html)
             token = tok_m.group(1) if tok_m else ""
+            # CodeIgniter 风格 CSRF：字段名可能是 csrf_token_name 等；也检查 meta 标签
+            csrf_m = re.search(r'name=["\'](csrf[_a-z]*)["\']\s+value=["\']([^"\']+)', form_html, re.I) or \
+                     re.search(r'content=["\']([^"\']+)["\']\s+name=["\'](csrf[_a-z]*)["\']', gt, re.I) or \
+                     re.search(r'<meta[^>]+name=["\']csrf-token["\']\s+content=["\']([^"\']+)', gt, re.I)
+            csrf_name = csrf_m.group(1) if csrf_m else ""
+            csrf_val = csrf_m.group(2) if csrf_m else ""
 
             # 收集表单内所有字段（input/textarea/select），保留其默认值
             field_names = []
@@ -989,8 +995,10 @@ async def paste_org(request: Request):
                 return JSONResponse({"ok": False, "error": "paste.org 被 Cloudflare 拦截，请在浏览器用新标签页方式分享", "cf": True})
             return JSONResponse({"ok": False, "error": "未能从 paste.org 获取链接", "cf": False,
                                  "debug": {"status": r.status_code, "url": url,
-                                           "token_found": bool(token), "fields": field_names,
-                                           "snippet": r.text[:300]}})
+                                           "token_found": bool(token), "csrf_name": csrf_name,
+                                           "csrf_val_head": csrf_val[:20], "fields": field_names,
+                                           "set_cookie": g.headers.get("set-cookie", "")[:200],
+                                           "form_snippet": form_html[:1200]}})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "cf": False})
 
