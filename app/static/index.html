@@ -94,6 +94,13 @@ label.search-toggle { display: flex; align-items: center; gap: 5px; font-size: 1
 #pluginModal.open { display: flex; }
 #pluginModal .card { background: var(--panel); border-radius: 16px; padding: 24px; width: 520px; max-width: calc(100vw - 32px); max-height: 85vh; overflow-y: auto; }
 #pluginModal h3 { margin-bottom: 14px; }
+/* ===== paste.org 纯文本链接结果模态框 ===== */
+#pasteOrgModal { position: fixed; inset: 0; background: rgba(15,17,26,.5); display: none; align-items: center; justify-content: center; z-index: 60; }
+#pasteOrgModal.open { display: flex; }
+#pasteOrgModal .card { background: var(--panel); border-radius: 16px; padding: 24px; width: 480px; max-width: calc(100vw - 32px); }
+#pasteOrgModal h3 { margin-bottom: 10px; }
+#pasteOrgModal .row-url { display: flex; gap: 8px; margin-top: 8px; }
+#pasteOrgModal input { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; box-sizing: border-box; font-family: inherit; outline: none; }
 #plugList { margin-bottom: 14px; }
 .plug-empty { font-size: 12px; color: var(--muted); padding: 10px 0; }
 .plug-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
@@ -225,6 +232,7 @@ img.gen-img:hover { filter: brightness(1.02); }
       <div style="display:flex;gap:10px;margin-top:12px;">
         <button class="btn primary" id="pe-save">💾 保存修改</button>
         <button class="btn" id="pe-cancel">取消</button>
+        <button class="btn" id="pe-link" style="margin-left:auto;">🔗 转纯文本链接 (paste.org)</button>
       </div>
     </div>
     <div class="plug-add">
@@ -253,6 +261,21 @@ img.gen-img:hover { filter: brightness(1.02); }
       </div>
       <div id="disc-list" style="margin-top:10px;"></div>
       <div id="disc-status" style="font-size:12px;margin-top:8px;display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<div id="pasteOrgModal">
+  <div class="card">
+    <h3>🔗 纯文本链接已生成</h3>
+    <p class="hint">复制下面链接即可分享该插件的纯文本内容（由 paste.org 托管）：</p>
+    <div class="row-url">
+      <input id="pasteOrgUrl" readonly>
+      <button class="btn primary" id="pasteOrgCopy" style="white-space:nowrap;">📋 复制</button>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn" id="pasteOrgOpen">🔗 打开链接</button>
+      <button class="btn" id="pasteOrgClose">关闭</button>
     </div>
   </div>
 </div>
@@ -446,7 +469,12 @@ function renderPlugins() {
       if (!confirm('确定要删除插件「' + p.name + '」吗？此操作不可恢复。')) return;
       plugins = plugins.filter(x => x.id !== p.id); savePlugins(); renderPlugins(); renderPlugBadge();
     };
-    d.appendChild(sw); d.appendChild(info); d.appendChild(del);
+    const link = document.createElement('span');
+    link.className = 'plug-del'; link.textContent = '🔗';
+    link.title = '转成纯文本链接 (paste.org)';
+    link.style.marginLeft = '6px';
+    link.onclick = (e) => { e.stopPropagation(); sharePluginAsLink(p.id); };
+    d.appendChild(sw); d.appendChild(info); d.appendChild(del); d.appendChild(link);
     // 待确认删除：AI 申请的删除会先进入此状态，必须用户点「确认删除」才会真正移除（防误删）
     if (p.pendingDelete) {
       const bar = document.createElement('div');
@@ -489,6 +517,46 @@ function renderPlugBadge() {
   $('#plugCount').textContent = n ? '🔌 ' + n : '🔌 插件';
 }
 function openPlugins() { $('#pluginModal').classList.add('open'); renderPlugins(); }
+
+// ---- 把单个插件转成 paste.org 纯文本链接 ----
+function sharePluginAsLink(id) {
+  const p = plugins.find(x => x.id === id);
+  if (!p) return;
+  const content = (p.content || '').trim();
+  if (!content) { setStatus('⚠️ 该插件没有内容，无法生成链接'); return; }
+  const lines = content.split('\n').length;
+  const warn = lines > 25 ? '（提示：paste.org 未登录用户限 25 行，本插件 ' + lines + ' 行，过长内容可能被截断）' : '';
+  setStatus('🔗 正在发布到 paste.org…' + warn);
+  fetch('/api/paste-org', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: content, name: p.name || 'plugin' }),
+  }).then(r => r.json()).then(j => {
+    if (j && j.ok && j.url) { showPasteLink(j.url); setStatus(''); }
+    else { fallbackPasteForm(content, p.name || 'plugin'); }
+  }).catch(() => { fallbackPasteForm(content, p.name || 'plugin'); });
+}
+// 服务器侧被 Cloudflare 拦截时，用浏览器新标签页直接提交表单（真实浏览器可过 CF）
+function fallbackPasteForm(text, name) {
+  setStatus('⚠️ paste.org 服务器侧受限，已用浏览器新标签页打开：请复制地址栏链接分享（纯文本）。');
+  try {
+    const f = document.createElement('form');
+    f.method = 'POST'; f.action = 'https://paste.org/'; f.target = '_blank'; f.style.display = 'none';
+    const add = (k, v) => { const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.appendChild(i); };
+    add('content', text); add('title', name); add('language', 'text'); add('expire', '1 Month');
+    document.body.appendChild(f); f.submit(); setTimeout(() => f.remove(), 6000);
+  } catch (e) { /* 提交异常（如弹窗被拦截）不影响提示 */ }
+}
+function showPasteLink(url) {
+  $('#pasteOrgUrl').value = url;
+  $('#pasteOrgModal').classList.add('open');
+}
+function copyPasteLink() {
+  const v = $('#pasteOrgUrl').value;
+  if (!v) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(v).then(() => setStatus('✅ 链接已复制到剪贴板'), () => { $('#pasteOrgUrl').select(); document.execCommand('copy'); setStatus('✅ 链接已复制'); });
+  } else { $('#pasteOrgUrl').select(); document.execCommand('copy'); setStatus('✅ 链接已复制'); }
+}
 
 /* ================= 对话内安装插件：工具定义 + function-calling 循环 ================= */
 const PLUGIN_TOOLS = [
@@ -2824,6 +2892,11 @@ $('#hpClose').onclick = closeHarnessPanel;
 $('#hpAdd').onclick = addTarget;
 $('#pe-save').onclick = savePlugEdit;
 $('#pe-cancel').onclick = closePlugEdit;
+$('#pe-link').onclick = () => { if (editingPlugId) sharePluginAsLink(editingPlugId); };
+$('#pasteOrgCopy').onclick = copyPasteLink;
+$('#pasteOrgOpen').onclick = () => { const u = $('#pasteOrgUrl').value; if (u) window.open(u, '_blank'); };
+$('#pasteOrgClose').onclick = () => $('#pasteOrgModal').classList.remove('open');
+$('#pasteOrgModal').addEventListener('click', e => { if (e.target.id === 'pasteOrgModal') e.target.classList.remove('open'); });
 $('#disc-ai').onclick = discAI;
 $('#disc-search').onclick = discSearch;
 $('#p-close').onclick = () => $('#pluginModal').classList.remove('open');
