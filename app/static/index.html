@@ -267,14 +267,18 @@ img.gen-img:hover { filter: brightness(1.02); }
 
 <div id="pasteOrgModal">
   <div class="card">
-    <h3>🔗 纯文本链接已生成</h3>
-    <p class="hint">复制下面链接即可分享该插件的纯文本内容（由 paste.org 托管）：</p>
-    <div class="row-url">
-      <input id="pasteOrgUrl" readonly>
-      <button class="btn primary" id="pasteOrgCopy" style="white-space:nowrap;">📋 复制</button>
-    </div>
+    <h3>🔗 分享到 paste.org（纯文本链接）</h3>
+    <p class="hint">paste.org 启用了 Cloudflare 人机验证，无法自动发布。已把该插件内容复制到剪贴板，请按以下步骤手动发布：</p>
+    <ol style="font-size:13px;line-height:1.7;margin:6px 0 10px;padding-left:18px;">
+      <li>点击下方「打开 paste.org」</li>
+      <li>在文本框里粘贴内容（已复制）</li>
+      <li>通过人机验证，点 <b>Create Paste</b></li>
+      <li>复制地址栏链接即可分享（纯文本）</li>
+    </ol>
+    <textarea id="pasteOrgContent" readonly rows="4" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;box-sizing:border-box;font-family:inherit;outline:none;resize:vertical;"></textarea>
     <div style="display:flex;gap:10px;margin-top:14px;">
-      <button class="btn" id="pasteOrgOpen">🔗 打开链接</button>
+      <button class="btn" id="pasteOrgCopy">📋 复制内容</button>
+      <button class="btn primary" id="pasteOrgOpen">🔗 打开 paste.org</button>
       <button class="btn" id="pasteOrgClose">关闭</button>
     </div>
   </div>
@@ -519,43 +523,40 @@ function renderPlugBadge() {
 function openPlugins() { $('#pluginModal').classList.add('open'); renderPlugins(); }
 
 // ---- 把单个插件转成 paste.org 纯文本链接 ----
+// 说明：paste.org 的发布表单挂了 Cloudflare Turnstile 人机验证，自动化提交（后端/手搭表单）无法通过，
+// 因此采用可靠路径：复制插件内容到剪贴板 + 打开 paste.org 新标签页，由用户在浏览器中完成发布。
+function copyTextToClipboard(t) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).catch(() => fallbackCopy(t));
+  } else { fallbackCopy(t); }
+}
+function fallbackCopy(t) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy'); ta.remove();
+  } catch (e) {}
+}
 function sharePluginAsLink(id) {
   const p = plugins.find(x => x.id === id);
   if (!p) return;
   const content = (p.content || '').trim();
   if (!content) { setStatus('⚠️ 该插件没有内容，无法生成链接'); return; }
   const lines = content.split('\n').length;
-  const warn = lines > 25 ? '（提示：paste.org 未登录用户限 25 行，本插件 ' + lines + ' 行，过长内容可能被截断）' : '';
-  setStatus('🔗 正在发布到 paste.org…' + warn);
-  fetch('/api/paste-org', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: content, name: p.name || 'plugin' }),
-  }).then(r => r.json()).then(j => {
-    if (j && j.ok && j.url) { showPasteLink(j.url); setStatus(''); }
-    else { fallbackPasteForm(content, p.name || 'plugin'); }
-  }).catch(() => { fallbackPasteForm(content, p.name || 'plugin'); });
-}
-// 服务器侧被 Cloudflare 拦截时，用浏览器新标签页直接提交表单（真实浏览器可过 CF）
-function fallbackPasteForm(text, name) {
-  setStatus('⚠️ paste.org 服务器侧受限，已用浏览器新标签页打开：请复制地址栏链接分享（纯文本）。');
-  try {
-    const f = document.createElement('form');
-    f.method = 'POST'; f.action = 'https://paste.org/'; f.target = '_blank'; f.style.display = 'none';
-    const add = (k, v) => { const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.appendChild(i); };
-    add('content', text); add('title', name); add('language', 'text'); add('expire', '1 Month');
-    document.body.appendChild(f); f.submit(); setTimeout(() => f.remove(), 6000);
-  } catch (e) { /* 提交异常（如弹窗被拦截）不影响提示 */ }
-}
-function showPasteLink(url) {
-  $('#pasteOrgUrl').value = url;
+  if (lines > 25) {
+    setStatus('⚠️ 提示：paste.org 未登录用户限 25 行，本插件 ' + lines + ' 行，过长内容可能被截断。已复制内容到剪贴板，请在弹窗中打开 paste.org 发布。');
+  } else {
+    setStatus('🔗 已复制插件内容到剪贴板，请在弹窗中打开 paste.org 完成发布');
+  }
+  copyTextToClipboard(content);
+  $('#pasteOrgContent').value = content;
   $('#pasteOrgModal').classList.add('open');
 }
 function copyPasteLink() {
-  const v = $('#pasteOrgUrl').value;
-  if (!v) return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(v).then(() => setStatus('✅ 链接已复制到剪贴板'), () => { $('#pasteOrgUrl').select(); document.execCommand('copy'); setStatus('✅ 链接已复制'); });
-  } else { $('#pasteOrgUrl').select(); document.execCommand('copy'); setStatus('✅ 链接已复制'); }
+  const v = $('#pasteOrgContent').value;
+  copyTextToClipboard(v);
+  setStatus('✅ 内容已复制到剪贴板');
 }
 
 /* ================= 对话内安装插件：工具定义 + function-calling 循环 ================= */
@@ -2894,7 +2895,7 @@ $('#pe-save').onclick = savePlugEdit;
 $('#pe-cancel').onclick = closePlugEdit;
 $('#pe-link').onclick = () => { if (editingPlugId) sharePluginAsLink(editingPlugId); };
 $('#pasteOrgCopy').onclick = copyPasteLink;
-$('#pasteOrgOpen').onclick = () => { const u = $('#pasteOrgUrl').value; if (u) window.open(u, '_blank'); };
+$('#pasteOrgOpen').onclick = () => window.open('https://paste.org/', '_blank');
 $('#pasteOrgClose').onclick = () => $('#pasteOrgModal').classList.remove('open');
 $('#pasteOrgModal').addEventListener('click', e => { if (e.target.id === 'pasteOrgModal') e.target.classList.remove('open'); });
 $('#disc-ai').onclick = discAI;
