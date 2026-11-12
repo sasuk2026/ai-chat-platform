@@ -562,15 +562,21 @@ async def render_create_service(request: Request):
         }
     else:
         runtime = (body.get("runtime") or "node").strip()
-        payload["serviceDetails"] = {
+        details = {
             "runtime": runtime,
             "plan": "free",
             "envSpecificDetails": {
                 "buildCommand": body.get("build") or "",
                 "startCommand": body.get("start") or "",
             },
-            "healthCheckPath": body.get("health") or "/",
         }
+        # 免费套餐不要默认加健康检查：Render 会定时 ping 健康检查路径，
+        # 入站 ping 会被算作「活动」，导致免费实例永不休眠、持续烧 750 小时/月额度。
+        # 仅在调用方显式传入 health 时才设置；否则留空 → 空闲 15 分钟后正常休眠。
+        hc = (body.get("health") or "").strip()
+        if hc:
+            details["healthCheckPath"] = hc
+        payload["serviceDetails"] = details
     env_vars = body.get("envVars")
     if isinstance(env_vars, list) and env_vars:
         payload["envVars"] = [{"key": str(e.get("key")), "value": str(e.get("value"))}
