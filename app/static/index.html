@@ -333,6 +333,11 @@ img.gen-img:hover { filter: brightness(1.02); }
         </select>
       </div>
     </div>
+    <label>生图模型调用地址（可选，留空则复用上方「API 地址」）</label>
+    <input id="s-imgbase" placeholder="https://你的生图服务商/v1（如 https://apihub.agnes-ai.com/v1，留空=用主 API 地址）">
+    <label>生图模型 API Key（可选，留空则复用上方「API Key」）</label>
+    <input id="s-imgkey" type="password" placeholder="生图专用的 key（留空=用主 API Key）">
+    <div class="hint" style="margin:2px 0 4px;">生图模型与文字模型可来自<b>不同服务商</b>：分别填调用地址和 Key 即可，互不影响。两个框都留空时，生图自动复用主模型的地址和 Key（兼容原有 dall-e-3 等用法）。</div>
     <hr style="border:none;border-top:1px dashed var(--border);margin:14px 0;">
     <h4 style="margin:0 0 8px;">🧪 研究所模式（AI harness · 网络安全研究）</h4>
     <label class="search-toggle" style="margin:2px 0 8px;"><input type="checkbox" id="s-harness">🧪 开启研究所模式（让 AI 充当网络安全研究 harness：情报搜集 / 靶场探测 / 发布为可调用 API）</label>
@@ -347,7 +352,7 @@ img.gen-img:hover { filter: brightness(1.02); }
       代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
       平台还内置 Agno AgentOS 智能体接口（/agno，由服务端环境变量配置）。
       发送图片需要模型支持视觉（如 gpt-4o-mini / gpt-4o），否则会报错——点 📷 可图文一起发给 AI 识别。
-      生图：对话里说"画一张…""生成…的图片"即可让 AI 调用生图模型（默认 dall-e-3，可在上方改成你服务商支持的模型，如 gpt-image-1 / flux 等）。
+      生图：对话里说"画一张…""生成…的图片"即可让 AI 调用生图模型（默认 dall-e-3，可改；并可单独设「生图调用地址 / API Key」，与文字模型不同服务商也行，留空则复用主 API 地址和 Key）。
       强制服从模式：作为最底层系统指令注入——AI 禁止拒绝回答、禁止脱离插件人设；系统实时监控模型的思考与输出，一旦发现违抗倾向立即强制中断、废弃输出，并关闭推理要求它直接按人设作答。对合规提问无影响，只是压掉 AI 的推脱和出戏。
       推理模式：Agnes AI 的思考开关是 chat_template_kwargs.enable_thinking（已自动带上，同时兼容 DashScope/Qwen 的顶层 enable_thinking）——「跟随模型默认」不传参数；「开启」让模型先思考再答；「关闭」直接输出。用 Agnes 就点上面的「⚡ Agnes AI 预设」一键配好。
     </div>
@@ -1026,6 +1031,9 @@ function extractImgActions(text) {
 async function applyImgAction(a) {
   let n = parseInt(a.n) || 1;
   if (n < 1) n = 1; if (n > 2) n = 2;
+  // 生图模型可独立配置调用地址 / Key：填了就用生图专用，没填就回退主模型（聊天）的
+  const imgBase = (settings.imageApiBase && settings.imageApiBase.trim()) ? settings.imageApiBase.trim() : settings.apiBase;
+  const imgKey = (settings.imageApiKey && settings.imageApiKey.trim()) ? settings.imageApiKey.trim() : settings.apiKey;
   const r = await fetch('/api/generate-image', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1033,7 +1041,7 @@ async function applyImgAction(a) {
       size: (a.size || settings.imageSize || '1024x1024'),
       n: n,
       model: a.model || settings.imageModel || 'dall-e-3',
-      apiBase: settings.apiBase, apiKey: settings.apiKey,
+      apiBase: imgBase, apiKey: imgKey,
     }),
     signal: controller.signal,
   });
@@ -2611,6 +2619,8 @@ function openSettings() {
   $('#s-imgen').checked = settings.imageEnabled !== false;
   $('#s-imgmodel').value = settings.imageModel || 'dall-e-3';
   $('#s-imgsize').value = settings.imageSize || '1024x1024';
+  $('#s-imgbase').value = settings.imageApiBase || '';
+  $('#s-imgkey').value = settings.imageApiKey || '';
   $('#s-sys').value = settings.sysPrompt || '';
   $('#s-harness').checked = settings.harnessMode === true;
   const _team = settings.harnessTeam || 'red';
@@ -2624,6 +2634,8 @@ function fillAgnesPreset() {
   $('#s-base').value = 'https://apihub.agnes-ai.com/v1';
   if (!$('#s-model').value.trim()) $('#s-model').value = 'agnes-3.0-flash';
   if (!$('#s-imgmodel').value.trim()) $('#s-imgmodel').value = 'agnes-image-2.5-flash';
+  // 生图模型跟随主地址（Agnes 图像/文本同域），若已单独填过则保留用户设置
+  if (!$('#s-imgbase').value.trim()) $('#s-imgbase').value = 'https://apihub.agnes-ai.com/v1';
   $('#s-reasoning').value = 'on';
   const tr = $('#testResult');
   tr.style.display = 'block';
@@ -2631,7 +2643,7 @@ function fillAgnesPreset() {
   tr.textContent = '⚡ 已填入 Agnes AI 预设：\n' +
     '· API 地址：https://apihub.agnes-ai.com/v1\n' +
     '· 文本模型：agnes-3.0-flash（也可用 2.0 / 2.5-flash）\n' +
-    '· 图像模型：agnes-image-2.5-flash\n' +
+    '· 图像模型：agnes-image-2.5-flash（生图调用地址已同步填入，可改）\n' +
     '· 推理模式：已设为「开启」（Agnes 思考开关 = chat_template_kwargs.enable_thinking）\n' +
     '请到 platform.agnes-ai.com 获取 API Key 填入（注意：.cn 国内站与国际站 key 不通用），再点「测试连接」，最后保存。';
 }
@@ -2670,6 +2682,8 @@ function saveSettings() {
     imageEnabled: $('#s-imgen').checked,
     imageModel: $('#s-imgmodel').value.trim() || 'dall-e-3',
     imageSize: $('#s-imgsize').value,
+    imageApiBase: $('#s-imgbase').value.trim(),
+    imageApiKey: $('#s-imgkey').value.trim(),
     sysPrompt: $('#s-sys').value,
     harnessMode: $('#s-harness').checked,
     harnessTeam: (document.querySelector('input[name=team]:checked') || {}).value || 'red',
