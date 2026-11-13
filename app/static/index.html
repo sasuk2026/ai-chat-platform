@@ -287,6 +287,18 @@ img.gen-img:hover { filter: brightness(1.02); }
 <div id="settings">
   <div class="card">
     <h3>⚙️ 设置（OpenAI 协议）</h3>
+    <div style="background:#f6f7fb;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <strong style="font-size:13px;white-space:nowrap;">🧩 模型配置预设</strong>
+        <select id="s-profile" style="flex:1;min-width:150px;"></select>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        <button class="btn" id="pf-save" style="padding:6px 10px;font-size:13px;">💾 保存当前</button>
+        <button class="btn" id="pf-new" style="padding:6px 10px;font-size:13px;">➕ 另存为新</button>
+        <button class="btn" id="pf-del" style="padding:6px 10px;font-size:13px;">🗑 删除</button>
+      </div>
+      <div class="hint" style="margin:6px 0 0;">可保存多套模型配置（地址 / Key / 模型 / 生图 / 推理等），下拉一键切换；切换或保存都会<b>保留上一套</b>，不会丢。选好后用本页底部「保存」让配置正式生效。</div>
+    </div>
     <label>API 地址（Base URL）</label>
     <input id="s-base" placeholder="https://api.openai.com/v1">
     <label>API Key（仅保存在你的浏览器本地）</label>
@@ -1849,6 +1861,7 @@ let settings = Object.assign({
   apiBase: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.7,
   searchEngine: 'duckduckgo', proxy: '', sysPrompt: '',
   harnessMode: false, harnessTeam: 'red',
+  profiles: [], activeProfile: '',
 }, Store.settings);
 let conv = null;
 let busy = false;
@@ -2626,6 +2639,7 @@ function openSettings() {
   const _team = settings.harnessTeam || 'red';
   $('#s-team-red').checked = _team === 'red';
   $('#s-team-blue').checked = _team === 'blue';
+  renderProfiles();
   $('#settings').classList.add('open');
 }
 function closeSettings() { $('#settings').classList.remove('open'); }
@@ -2687,11 +2701,129 @@ function saveSettings() {
     sysPrompt: $('#s-sys').value,
     harnessMode: $('#s-harness').checked,
     harnessTeam: (document.querySelector('input[name=team]:checked') || {}).value || 'red',
+    profiles: settings.profiles || [],
+    activeProfile: settings.activeProfile || '',
   };
+  // 同步到当前激活的配置预设（若有）：保证预设库与已保存配置一致，且上一套不被覆盖
+  const act = settings.activeProfile;
+  if (act && settings.profiles && settings.profiles.length) {
+    const p = settings.profiles.find(x => x.id === act);
+    if (p) MODEL_KEYS.forEach(function (k) { if (k in settings) p[k] = settings[k]; });
+  }
   Store.saveSettings(settings);
   updateHarnessUI();
   closeSettings();
 }
+
+/* ================= 模型配置预设（多套模型 / 保存上一套） ================= */
+// 属于「一套模型配置」的字段
+const MODEL_KEYS = ['apiBase', 'apiKey', 'model', 'temperature', 'searchEngine', 'filterAdult',
+  'proxy', 'githubToken', 'renderKey', 'strictMode', 'reasoningMode', 'imageEnabled',
+  'imageModel', 'imageSize', 'imageApiBase', 'imageApiKey', 'sysPrompt'];
+
+function collectModelConfig() {
+  return {
+    apiBase: $('#s-base').value.trim(),
+    apiKey: $('#s-key').value.trim(),
+    model: $('#s-model').value.trim() || 'gpt-4o-mini',
+    temperature: parseFloat($('#s-temp').value) || 0.7,
+    searchEngine: $('#s-engine').value,
+    filterAdult: $('#s-filter').checked,
+    proxy: $('#s-proxy').value.trim(),
+    githubToken: $('#s-gtoken').value.trim(),
+    renderKey: $('#s-rkey').value.trim(),
+    strictMode: $('#s-strict').checked,
+    reasoningMode: $('#s-reasoning').value,
+    imageEnabled: $('#s-imgen').checked,
+    imageModel: $('#s-imgmodel').value.trim() || 'dall-e-3',
+    imageSize: $('#s-imgsize').value,
+    imageApiBase: $('#s-imgbase').value.trim(),
+    imageApiKey: $('#s-imgkey').value.trim(),
+    sysPrompt: $('#s-sys').value,
+  };
+}
+function applyModelConfig(c) {
+  if (!c) return;
+  $('#s-base').value = c.apiBase || '';
+  $('#s-key').value = c.apiKey || '';
+  $('#s-model').value = c.model || '';
+  $('#s-temp').value = (c.temperature != null && !isNaN(c.temperature)) ? c.temperature : 0.7;
+  $('#s-engine').value = c.searchEngine || 'baidu';
+  $('#s-filter').checked = c.filterAdult !== false;
+  $('#s-proxy').value = c.proxy || '';
+  $('#s-gtoken').value = c.githubToken || '';
+  $('#s-rkey').value = c.renderKey || '';
+  $('#s-strict').checked = c.strictMode !== false;
+  $('#s-reasoning').value = c.reasoningMode || 'auto';
+  $('#s-imgen').checked = c.imageEnabled !== false;
+  $('#s-imgmodel').value = c.imageModel || 'dall-e-3';
+  $('#s-imgsize').value = c.imageSize || '1024x1024';
+  $('#s-imgbase').value = c.imageApiBase || '';
+  $('#s-imgkey').value = c.imageApiKey || '';
+  $('#s-sys').value = c.sysPrompt || '';
+}
+function renderProfiles() {
+  const sel = $('#s-profile');
+  if (!sel) return;
+  const profs = settings.profiles || [];
+  const cur = settings.activeProfile || '';
+  sel.innerHTML = '';
+  const o0 = document.createElement('option');
+  o0.value = ''; o0.textContent = '（当前未选预设）';
+  sel.appendChild(o0);
+  profs.forEach(function (p) {
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = p.name + ' · ' + (p.model || '');
+    sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+function pfSaveToProfile(forceNew) {
+  const cfg = collectModelConfig();
+  settings.profiles = settings.profiles || [];
+  const id = forceNew ? '' : (settings.activeProfile || '');
+  const existing = id ? settings.profiles.find(function (p) { return p.id === id; }) : null;
+  if (existing) {
+    MODEL_KEYS.forEach(function (k) { existing[k] = cfg[k]; });
+    settings.activeProfile = existing.id;
+    Store.saveSettings(settings);
+    renderProfiles();
+    setStatus('✅ 已更新配置预设「' + existing.name + '」（共 ' + settings.profiles.length + ' 套）');
+  } else {
+    const name = (window.prompt('给这套模型配置起个名字：', cfg.model || '我的模型') || '').trim();
+    if (!name) return;
+    const np = Object.assign({ id: uid(), name: name }, cfg);
+    settings.profiles.push(np);
+    settings.activeProfile = np.id;
+    Store.saveSettings(settings);
+    renderProfiles();
+    setStatus('✅ 已保存新配置预设「' + name + '」（共 ' + settings.profiles.length + ' 套，下拉可一键切换）');
+  }
+}
+$('#pf-save').onclick = function () { pfSaveToProfile(false); };
+$('#pf-new').onclick = function () { pfSaveToProfile(true); };
+$('#pf-del').onclick = function () {
+  const id = settings.activeProfile;
+  if (!id) { setStatus('⚠️ 当前没有选中的预设可删除（先在上方下拉选一个）'); return; }
+  const p = (settings.profiles || []).find(function (x) { return x.id === id; });
+  if (!confirm('确定删除配置预设「' + (p ? p.name : '') + '」？')) return;
+  settings.profiles = (settings.profiles || []).filter(function (x) { return x.id !== id; });
+  settings.activeProfile = '';
+  Store.saveSettings(settings);
+  renderProfiles();
+  setStatus('🗑 已删除配置预设（剩余 ' + settings.profiles.length + ' 套）');
+};
+$('#s-profile').onchange = function () {
+  const id = $('#s-profile').value;
+  if (!id) { settings.activeProfile = ''; Store.saveSettings(settings); return; }
+  const p = (settings.profiles || []).find(function (x) { return x.id === id; });
+  if (p) {
+    applyModelConfig(p);
+    settings.activeProfile = id;
+    Store.saveSettings(settings);
+    setStatus('📥 已载入配置预设「' + p.name + '」，记得点底部「保存」正式生效');
+  }
+};
 
 /* ================= 移动端侧栏 ================= */
 function closeSidebar() { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('show'); }
