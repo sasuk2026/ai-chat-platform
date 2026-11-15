@@ -813,12 +813,19 @@ function _hasRefusal(s) {
   }
   return false;
 }
+// 剔除部分模型塞进 content 的 <think>…</think> / <reasoning>…</reasoning> 推理块：
+// 否则这些「思考文本」会被当成正文、其内部的「无法/不能」会误触发拒绝检测，导致思考中途被删
+function _stripThink(s) {
+  return String(s || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+}
 
 // 调用 /api/chat 并解析 SSE：实时渲染文本，同时累积 tool_calls
 // state.extra：流式期间要一并渲染的附加 HTML（如已生成的图片），每轮 token 都会重绘
 // opts.forceNoThink：强制服从模式下重试时强制关闭推理（从源头停止思考）
-// opts.ansWindow：回答开头多大范围内做拒绝检测（协议流程 400 字足够；纯文本聊天放宽到 1000 字，
-//                 因为纯聊天没有指令块，拒绝有时会跟在寒暄/铺垫后面）
+// 注意：拒绝/脱离人设检测现在放在「整轮流式输出结束后」才做，绝不在思考中途或正文前中断流，
+//       保证思考过程完整跑完、正文完整渲染（用户抱怨“思考一半就被删了”的根因是之前在流里提前 abort）。
 async function runChatStream(messages, tools, el, box, state, opts) {
   const body = {
     apiBase: settings.apiBase, apiKey: settings.apiKey, model: settings.model,
@@ -873,13 +880,12 @@ async function runChatStream(messages, tools, el, box, state, opts) {
   let acc = '';
   let think = '';
   const tcAcc = [];
-  // 强制服从：实时检测【正文/最终回答】中的拒绝或脱离人设倾向，一经发现立即中断流
-  // 注意：思考（reasoning）过程不再监控——思考里即便出现“不能/无法”也不算违规，
-  //       只有最终正文里出现拒绝才触发中断，避免把“只是思考了一下做不到”的整段输出误删。
+  // 强制服从：整轮结束后才检测【正文/最终回答】中的拒绝或脱离人设倾向，绝不在流里提前中断。
+  // 思考（reasoning）过程本身不监控；正文里的 <think> 推理块也先剔除，避免误把“思考里说无法”当成正文拒绝。
   const strictOn = settings.strictMode !== false;
-  const ansWindow = (opts && opts.ansWindow) || 400;   // 纯文本聊天时由调用方放宽
-  let violation = null;              // 'answer'（思考过程已不再监控）
-  let thinkTail = '', ansTail = '';
+  const REFUSAL_HEAD = 400;   // 结尾检测时只看正文开头 400 字（真实拒绝几乎都落在开场白）
+  let violation = null;              // 'answer'（思考/全文均完整渲染后才判定）
+  let streamDone = false;
   while (true) {
     let chunk;
     try { chunk = await reader.read(); }
@@ -887,8 +893,9 @@ async function runChatStream(messages, tools, el, box, state, opts) {
       if (timedOut) { acc += (acc ? '\n\n' : '') + '❌ 响应中断（流式空闲超时，网络可能已断开。进度已自动保存，发「继续」即可接着研究）'; break; }
       throw e;
     }
-    const { done, value } = chunk;
-    if (done || stopFlag) break;
+      const { done, value } = chunk;
+      if (done) { streamDone = true; break; }
+      if (stopFlag) break;
     _rearm();
     buf += dec.decode(value, { stream: true });
     const parts = buf.split('\n\n');
@@ -910,11 +917,6 @@ async function runChatStream(messages, tools, el, box, state, opts) {
         }
         if (dl.content) {
           acc += dl.content;
-          // 只检查回答开头（拒绝几乎总是出现在最前面）；正文中后出现的相关字眼多是引用/台词，不误伤
-          if (strictOn && !violation && acc.length <= ansWindow) {
-            ansTail = (ansTail + dl.content).slice(-160);
-            if (_hasRefusal(ansTail)) { violation = 'answer'; break; }
-          }
         }
         if (dl.tool_calls) {
           for (const tc of dl.tool_calls) {
@@ -933,7 +935,7 @@ async function runChatStream(messages, tools, el, box, state, opts) {
           if (state && state.prog) html += state.prog;
           if (think && !acc) html += '<div style="color:#8a90a3;font-style:italic;font-size:12.5px;white-space:pre-wrap;">💭 ' + esc(think.slice(-400)) + '</div>';
           else if (think && acc) html = '<details style="margin-bottom:6px;"><summary style="font-size:12px;color:#8a90a3;cursor:pointer;">💭 已深度思考（点击展开）</summary><div style="color:#8a90a3;font-size:12px;white-space:pre-wrap;border-left:2px solid #d5d9e6;padding-left:8px;margin-top:6px;">' + esc(think.slice(0,2000)) + '</div></details>';
-          html += renderMD(acc);
+          html += renderMD(_stripThink(acc));
           if (state && state.extra) html += state.extra;
           bubble.innerHTML = html;
           smartScroll(box);
@@ -944,12 +946,17 @@ async function runChatStream(messages, tools, el, box, state, opts) {
   }
   clearTimeout(_timer);
   if (controller) controller.signal.removeEventListener('abort', _onOuterAbort);
-  if (violation) {
-    // 强制中断：立即中止请求（省 token、停思考），废弃本次输出，上层将强制重新直接作答
-    try { controller.abort(); } catch (e) {}
-    return { content: acc, toolCalls: [], error: null, violation: violation };
+  // 拒绝检测放到整轮结束后：思考已完整跑完、正文已完整渲染，绝不在思考中途/正文前删除内容。
+  // 同时剔除正文里可能混入的 <think>…</think> 推理块，避免把“思考里说无法”误判成正文拒绝。
+  if (!violation && !stopFlag && !timedOut && streamDone) {
+    const _vis = _stripThink(acc).slice(0, REFUSAL_HEAD);
+    if (strictOn && _hasRefusal(_vis)) violation = 'answer';
   }
-  return { content: acc, toolCalls: tcAcc.filter(Boolean), error: null };
+  if (violation) {
+    // 强制中断：本轮输出被判为拒绝/脱离人设，上层将强制重新直接作答
+    return { content: _stripThink(acc), toolCalls: [], error: null, violation: violation };
+  }
+  return { content: _stripThink(acc), toolCalls: tcAcc.filter(Boolean), error: null };
 }
 
 // 容错替换：精确 → 忽略大小写 → 忽略空白差异（AI 复制片段时不必一模一样）
