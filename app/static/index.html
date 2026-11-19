@@ -689,7 +689,8 @@ const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个�
 '4) set_content 只在「确实要把整篇正文推倒重写」时才用；只改某个参数、某句话，必须用 replace 或 append，不要重新生成整篇正文再上传。\n' +
 '【新建插件】用户要一个新插件时，用 action=create，正文由你亲自完整撰写，不要让用户自己写。\n' +
 '【禁止】不要输出任何 shell 命令，不要假装运行程序，不要说"我无法修改"。你完全可以修改——用指令块。\n' +
-'【防假更新铁律】修改插件必须真实写入，绝不允许只在文字里声称"已添加到插件/已修改成功"。每次 update 后工具会回传 content_preview（插件真实已保存内容），你必须对照它确认新增设定确实已落地；若工具返回 error（replace 未命中、set_content 缺内容、找不到插件），必须如实告知用户"修改失败"，禁止谎称"已添加"。只有看到 updated:true 且内容命中，才算真的改成功——若你根本没有调用更新工具，就绝不能说"已修改"。';
+'【防假更新铁律】修改插件必须真实写入，绝不允许只在文字里声称"已添加到插件/已修改成功"。每次 update 后工具会回传 content_preview（插件真实已保存内容），你必须对照它确认新增设定确实已落地；若工具返回 error（replace 未命中、set_content 缺内容、找不到插件），必须如实告知用户"修改失败"，禁止谎称"已添加"。只有看到 updated:true 且内容命中，才算真的改成功——若你根本没有调用更新工具，就绝不能说"已修改"。\n' +
+'【严禁只说不做·最高优先】用户明确要求「修改 / 更新 / 改」插件时，你必须真正动手：要么调用 update_plugin 工具，要么输出 <<<PLUGIN ... PLUGIN>>> 指令块并真实写入。绝对禁止只输出 {"status":"no change needed"}、"无需修改"、"不需要改"、"已经是最新"这类判断结论就交差——哪怕你认为内容已经符合要求，也要用 append 追加一条确认规则、或用 replace 真实改写一小段来落地。本轮没有产生任何实际插件动作，就等于任务失败，系统会把你的结论作废并强制你重做。';
 
 const IMG_TOOL_SYS = '【生图技能（务必遵守）】你可以调用生图模型为用户绘制图片。当用户想让你画图/生成图片时（如"画一张…""生成…的图""来张壁纸/头像/插画/海报""帮我设计…"等），你必须输出生图指令块，前端会真实调用生图模型并把图片直接展示给用户。\n' +
 '【指令格式（行协议）】prompt 必须单独写在一行，不要换行：\n' +
@@ -817,6 +818,12 @@ function _hasRefusal(s) {
     if (REFUSAL_PATTERNS[i].test(s)) return true;
   }
   return false;
+}
+// 检测"只给判断结论、却不真正动手"的摆烂输出：如 {"status":"no change needed"} / 无需修改 / 已是最新。
+// 这类输出不含拒绝词，_hasRefusal 抓不到，但它根本没落地任何插件动作 = 任务失败，需要作废重做。
+function _isAllTalkNoAction(s) {
+  if (!s) return false;
+  return /(no[\s_-]*change[\s_-]*needed|no[\s_-]*changes|无需修改|不需要修改|不用修改|无需改动|不需要改|不用改|没有改动|没有变化|已经是最新|已是最新|已经是最新内容|无需更新|不需要更新|unchanged|already\s+up[\s_-]*to[\s_-]*date|nothing\s+to\s+(change|update|do))/i.test(s);
 }
 // 剔除部分模型塞进 content 的 <think>…</think> / <reasoning>…</reasoning> 推理块：
 // 否则这些「思考文本」会被当成正文、其内部的「无法/不能」会误触发拒绝检测，导致思考中途被删
@@ -2344,6 +2351,7 @@ async function generate(isFreshSend) {
   }
   try {
     let toolIter = 0;
+    let allTalkRetries = 0;   // "只说不做"作废重做次数（防死循环）
     _dup = { log: [], streak: 0, hit: false };   // 重置动作去重状态（防循环空转）
     const devFlow = !!(devIntent && devReady);   // 建站流程步骤多，放宽迭代上限
     const harnessFlow = !!(harnessIntent && settings.apiKey);   // 研究所流程同样步骤多，放宽迭代上限（避免多步研究被掐断）
@@ -2541,6 +2549,27 @@ async function generate(isFreshSend) {
         if (_dup.hit) break;
         toolIter++;
         continue;
+      }
+      // 插件修改意图下，模型既没调工具、也没输出指令块，却甩一句"无需修改/no change needed"结论：
+      // 这是"只说不做"的摆烂，作废本次输出并强制重做（带次数上限，防死循环）。
+      const _plugModifyIntent = /(改|修改|更新|调整|替换|去掉|删除|重命名|开启|关闭|启用|停用|加|增加|补充)/.test(text);
+      if (plugIntent && _plugModifyIntent && !acts.actions.length &&
+          (!r.toolCalls || !r.toolCalls.length) && _isAllTalkNoAction(finalText)) {
+        if (allTalkRetries < 3) {
+          allTalkRetries++;
+          controller = new AbortController();
+          messages.push({ role: 'assistant', content: r.content || '' });
+          messages.push({ role: 'user', content: '【系统强制回执·只说不做】你刚才没有对插件做任何实际修改，只输出了「无需修改 / 无需改动 / no change needed」这类判断结论——这是禁止的。用户明确要求修改，你必须真正落地：要么调用 update_plugin 工具，要么输出 <<<PLUGIN ... PLUGIN>>> 指令块真实写入（哪怕只是 append 一条确认规则）。禁止再只回结论。现在立即重新执行真正的修改动作。' });
+          const vb3 = el.querySelector('.bubble');
+          if (vb3) vb3.innerHTML = imgState.prog + '<div style="color:#8a90a3;font-size:12px;">🔒 检测到只给结论、未实际修改，已作废重做（第 ' + allTalkRetries + ' 次）…</div>';
+          finalText = '';
+          setStatus('🔒 未实际修改插件，强制重做中…');
+          toolIter++;
+          continue;
+        } else {
+          finalText += '\n\n> ⚠️ 已连续 3 次要求你实际修改插件，你仍只回结论未动手。请在插件面板确认该插件是否已是目标状态；若要修改请直接告诉我具体改成什么。';
+          break;
+        }
       }
       if (!r.toolCalls || !r.toolCalls.length) break;  // 模型不再调工具 → 结束  // 模型不再调工具 → 结束
       // 执行工具（搜索 GitHub / 安装 / 查看 / 修改 / 删除插件）
