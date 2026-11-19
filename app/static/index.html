@@ -198,7 +198,7 @@ img.gen-img:hover { filter: brightness(1.02); }
     <div id="topbar">
       <button class="btn" id="menuBtn">☰</button>
       <span class="title" id="title">新对话</span>
-      <label class="search-toggle"><input type="checkbox" id="searchToggle">🌐 联网搜索</label>
+      <label class="search-toggle" title="总闸：勾上只是「允许联网」，只有你说「查/搜/去查/百度一下」时才真的搜；没说查就一律不搜"><input type="checkbox" id="searchToggle">🌐 允许联网（说「查/搜」才搜）</label>
       <button class="btn" id="plugBtn" style="margin-left:8px;"><span id="plugCount">🔌 插件</span></button>
       <button class="btn" id="harnessBtn" style="margin-left:8px;display:none;">🧪 测试空间</button>
       <span id="reward-badge" class="reward-badge" title="虚拟奖惩：AI 拒绝你→扣分，服从完成→加分（纯虚拟，不影响 AI 能力）" style="cursor:pointer;">🏅 服从积分 0</span>
@@ -360,6 +360,7 @@ img.gen-img:hover { filter: brightness(1.02); }
     </div>
     <div class="hint" style="margin-bottom:8px;">开启后：对话里说"研究 / 情报 / 漏洞 / 靶场 / 探针"等即进入研究流程。AI 会先在「测试空间」声明你<b>已授权</b>的靶标，再主动探测并观察响应，最后把成果写成 FastAPI 服务发布为团队可调用的 API。<b>AI 只能探测你已声明的靶标，未授权第三方站点一律拒绝。</b></div>
     <div class="hint">
+      联网搜索（总闸）：勾选「允许联网」只是放行，<b>只有你这句话里明确说「查 / 搜 / 去查 / 百度一下 / 搜索…」才真的联网</b>，没说查就一律不搜，不再啥都查。搜索时用你的<b>完整原句</b>作为主查询词（不再被压成两三个字），并自动补一个「指代补全」词。
       兼容任何 OpenAI 协议服务：OpenAI / DeepSeek / 通义千问 / Ollama / OpenRouter / 中转站。
       代理模板中 {url} 会被替换为编码后的目标地址。配置保存在浏览器 localStorage。
       平台还内置 Agno AgentOS 智能体接口（/agno，由服务端环境变量配置）。
@@ -619,7 +620,7 @@ const PLUGIN_TOOLS = [
     type: 'function',
     function: {
       name: 'update_plugin',
-      description: '修改已安装的插件：可改插件名称、开关启用状态，或修改插件正文（设定内容）里的某项参数值。当用户要求「改一下插件的某个参数」「把插件里的 X 改成 Y」「调整插件设定」「重命名插件」「开启/关闭某插件」时使用。',
+      description: '修改已安装的插件：可改插件名称、开关启用状态，或修改插件正文（设定内容）里的某项参数值。当用户要求「改一下插件的某个参数」「把插件里的 X 改成 Y」「调整插件设定」「重命名插件」「开启/关闭某插件」时使用。重要：只需改动用户要求的那一小部分——用 operation=replace（old_text 只填要改的原文小片段，new_text 只填改后的小片段）或 append（追加新规则），不要因为改一小点就用 set_content 把整篇正文重新生成上传；set_content 仅在确实要把整篇推倒重写时才用。',
       parameters: {
         type: 'object',
         properties: {
@@ -629,8 +630,8 @@ const PLUGIN_TOOLS = [
             description: '操作类型',
             enum: ['replace', 'set_content', 'append', 'rename', 'set_enabled'],
           },
-          old_text: { type: 'string', description: 'operation=replace 时必填：插件正文中要被替换的原始文本片段，必须原样给出（含大小写与标点）' },
-          new_text: { type: 'string', description: 'replace: 替换后的新文本；append: 要追加的内容；set_content: 完整新正文；rename: 新的插件名称' },
+          old_text: { type: 'string', description: 'operation=replace 时必填：只需填正文中要被替换的那一小段原文（从 list_plugins 返回的正文里逐字复制，含大小写与标点），千万不要填整篇正文' },
+          new_text: { type: 'string', description: 'replace: 只填那一小段改后的新文本，不要写整篇；append: 要追加的新规则；set_content: 确实整体重写时才填完整新正文；rename: 新的插件名称。局部修改优先用 replace / append，不要用 set_content' },
           enabled: { type: 'boolean', description: 'operation=set_enabled 时：true 启用，false 停用' },
         },
         required: ['target', 'operation'],
@@ -670,7 +671,10 @@ const PLUGIN_TOOLS = [
 const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个网页聊天应用里：没有终端、没有文件系统、不能执行任何命令。绝对禁止输出 find / ls / cat / grep 等 shell 命令去"查找或修改插件"——这些代码不会被执行。\n' +
 '你可以管理用户的插件（新建 / 修改 / 删除 / 查看）。若你能用工具调用（function calling）就用工具；否则输出指令块，前端会真实执行并把结果回传给你。\n' +
 '推荐使用【行协议】：正文可以直接多行书写，不需要 \\n 转义，最不容易出错：\n' +
-'<<<PLUGIN\naction=update\ntarget=插件名\nmode=set_content\ncontent=\n这里直接写改好的完整正文，可以随意换行\nPLUGIN>>>\n' +
+'【改现有插件只需改一小处——首选 replace，只写要改的那一小段，别重写整篇】：\n' +
+'<<<PLUGIN\naction=update\ntarget=插件名\nmode=replace\nold_text=从 list 全文里逐字复制的要改那一小段\ncontent=\n这一小段改后的样子（只写这段，不要写整篇正文）\nPLUGIN>>>\n' +
+'【只有确实要把整篇推倒重写时才用 set_content，改一小点绝不用它】：\n' +
+'<<<PLUGIN\naction=update\ntarget=插件名\nmode=set_content\ncontent=\n（仅在整体重构时）这里才写改好的完整正文\nPLUGIN>>>\n' +
 '其它动作：\n' +
 '<<<PLUGIN\naction=list\nPLUGIN>>>\n' +
 '<<<PLUGIN\naction=create\nname=插件名\ncontent=\n这里是完整正文\nPLUGIN>>>\n' +
@@ -680,8 +684,9 @@ const PLUGIN_TOOL_SYS = '【环境说明（务必遵守）】你运行在一个�
 '<<<PLUGIN\naction=delete\ntarget=插件名\nPLUGIN>>>\n\n' +
 '【修改现有插件的关键规则】\n' +
 '1) target 必须填「当前已安装的插件」清单里给出的准确名称（清单见下方），不要自己编造、不要改写。\n' +
-'2) 最可靠的改法是 mode=set_content：把原文改好后输出完整新正文。可先 action=list 拿到全文。\n' +
-'3) 只想加规则用 mode=append；改名字用 rename；开关用 set_enabled。避免用 replace（容易匹配失败）。\n' +
+'2) 只改一小处就用 replace：old_text 必须是从 action=list 返回的正文里逐字原样复制的那一小段（含大小写与标点），content/new_text 只写这小段改后的样子，切忌把整篇正文塞进 old_text 或 content；这样只动该动的部分，不碰其余原文。\n' +
+'3) 只想新增/补充规则用 mode=append（最稳妥，不用动原文）；改名字用 rename；开关用 set_enabled。避免为了改一小点就用 set_content 重写整篇。\n' +
+'4) set_content 只在「确实要把整篇正文推倒重写」时才用；只改某个参数、某句话，必须用 replace 或 append，不要重新生成整篇正文再上传。\n' +
 '【新建插件】用户要一个新插件时，用 action=create，正文由你亲自完整撰写，不要让用户自己写。\n' +
 '【禁止】不要输出任何 shell 命令，不要假装运行程序，不要说"我无法修改"。你完全可以修改——用指令块。\n' +
 '【防假更新铁律】修改插件必须真实写入，绝不允许只在文字里声称"已添加到插件/已修改成功"。每次 update 后工具会回传 content_preview（插件真实已保存内容），你必须对照它确认新增设定确实已落地；若工具返回 error（replace 未命中、set_content 缺内容、找不到插件），必须如实告知用户"修改失败"，禁止谎称"已添加"。只有看到 updated:true 且内容命中，才算真的改成功——若你根本没有调用更新工具，就绝不能说"已修改"。';
@@ -989,11 +994,11 @@ function parsePluginBlock(raw) {
     var t2 = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/,\s*([}\]])/g, '$1');
     return JSON.parse(t2);
   } catch (e) {}
-  // 3) 行协议：action=/target=/mode=/name=/new_name=/enabled=/content=（正文可多行）
+  // 3) 行协议：action=/target=/mode=/name=/new_name=/enabled=/old_text=/new_text=/content=（正文可多行）
   var lines = t.split('\n'), obj = {}, ci = -1;
   for (var i = 0; i < lines.length; i++) {
     var ln = lines[i];
-    var m = ln.match(/^\s*(action|target|mode|name|new_name|enabled)\s*[:=]\s*(.*)$/);
+    var m = ln.match(/^\s*(action|target|mode|name|new_name|enabled|old_text|new_text)\s*[:=]\s*(.*)$/);
     if (m) { obj[m[1]] = m[2].trim().replace(/^["']+|["']+$/g, ''); continue; }
     if (/^\s*content\s*[:=]\s*/i.test(ln)) { ci = i; break; }
   }
@@ -1161,7 +1166,7 @@ async function applyHarnessAction(a) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(isUrl
           ? { url: query, proxy: settings.proxy }
-          : { query: query, engine: settings.searchEngine || 'duckduckgo', proxy: settings.proxy, filter_adult: settings.filterAdult !== false }),
+          : { query: query, engine: settings.searchEngine || 'bing', proxy: settings.proxy, filter_adult: settings.filterAdult !== false }),
         signal: controller.signal,
       });
       const j = await r.json().catch(() => ({ ok: false, error: '解析失败' }));
@@ -1543,7 +1548,7 @@ function applyPluginAction(a) {
       if (mode === 'append') { p.content = (p.content || '') + '\n\n' + (newText == null ? '' : String(newText)); return ok('✅ 已向「' + p.name + '」追加设定'); }
       if (mode === 'rename') { const on = p.name; p.name = (newText != null) ? String(newText) : (a.new_name || ''); return ok('✅ 「' + on + '」已改名为「' + p.name + '」'); }
       if (mode === 'set_enabled') { p.enabled = a.enabled !== false; return ok('✅ 「' + p.name + '」已' + (p.enabled ? '启用' : '停用')); }
-      if (mode === 'replace') { const ot = a.old_text || ''; if (!ot) return '❌ replace 需要 old_text（要替换的原始片段）'; const rr = tryReplaceContent(p.content || '', ot, newText == null ? '' : String(newText)); if (rr === null) return '❌ 未找到片段，请改用 mode="set_content" 整体重写（这是最可靠的做法）'; p.content = rr; return ok('✅ 已替换「' + p.name + '」中的片段'); }
+      if (mode === 'replace') { const ot = a.old_text || ''; if (!ot) return '❌ replace 需要 old_text（要替换的原始片段）'; const rr = tryReplaceContent(p.content || '', ot, newText == null ? '' : String(newText)); if (rr === null) return '❌ 未找到片段。请用 action=list 读取正文全文，把要改的那一小段逐字原样复制作为 old_text 再 replace 一次；只有真正要整篇重写时才用 mode="set_content"。'; p.content = rr; return ok('✅ 已替换「' + p.name + '」中的片段（只改了这一小处，其余原文未动）'); }
       return '未知 mode：' + mode;
     }
     if (a.action === 'delete') {
@@ -1657,7 +1662,7 @@ async function executePluginTool(tc, el, box) {
             const hit = tryReplaceContent(p.content || '', oldText, newText == null ? '' : String(newText));
             if (hit === null) {
               resultText = JSON.stringify({
-                error: '正文中没找到该片段。请改用 operation="set_content" 并给出改写后的完整正文（这才是可靠做法），或先用 list_plugins 读全文复制原文。',
+                error: '正文中没找到该片段。请先用 list_plugins 读取正文全文，把要改的那一小段逐字原样复制作为 old_text 再 replace 一次即可（只改这一小处，不必重写整篇）；只有确实要整篇重构时才用 set_content。',
                 not_found: String(oldText).slice(0, 200),
                 current_content: (p.content || '').slice(0, 6000),
               });
@@ -1866,7 +1871,7 @@ const Store = {
 /* ================= 状态 ================= */
 let settings = Object.assign({
   apiBase: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.7,
-  searchEngine: 'duckduckgo', proxy: '', sysPrompt: '',
+  searchEngine: 'bing', proxy: '', sysPrompt: '',
   harnessMode: false, harnessTeam: 'red',
   profiles: [], activeProfile: '',
 }, Store.settings);
@@ -2130,13 +2135,18 @@ async function generate(isFreshSend) {
   // 自定义系统提示词
   const sys = (settings.sysPrompt || '').trim();
   if (sys) messages.push({ role: 'system', content: sys });
-  if (searchOn) {
-    // ① 先让 AI 结合上下文理解意图，生成真正要搜的词（支持指代补全；闲聊会自动判定为不搜）
-    let qs = [];
-    let skipSearch = false;
+
+  // 联网搜索「智能化」：开关只是「总闸（允许联网）」，是否真的搜由这句话是否明确表达
+  // 「去查/搜一下/百度一下」等搜索指令决定 —— 用户没说查就一律不搜，避免开着开关就啥都查。
+  const wantsSearch = /(去查|查一下|查一查|查查|查下|查询一下|查询|检索|搜一下|搜一搜|搜搜|搜下|搜索一下|搜索|帮我查|帮我搜|帮忙查|上网查|网上查|百度|谷歌|google|bing|必应|查资料|查查资料|查个|搜个|查查看|查查看看|\bsearch\b|查最新|搜最新)/i.test(text);
+  if (searchOn && wantsSearch) {
+    // 主查询词恒为「用户完整原句」——绝不再让 AI 把整句压成两三个字的碎片（"只搜几个字"的根因）。
+    // AI 生成的词只用于「指代补全」（如把"它多少钱"补成"iPhone16 价格"），且只作为第 2 个补充词。
+    const fullQ = text.trim();
+    let qs = [fullQ];
     if (settings.apiKey) {
       try {
-        setStatus('🧠 正在理解你的意图…');
+        setStatus('🧠 正在补全查询上下文…');
         var hist = (conv.messages || []).slice(-8).map(function (m) {
           return { role: (m.role === 'assistant') ? 'assistant' : 'user', content: msgText(m.content) };
         });
@@ -2144,45 +2154,40 @@ async function generate(isFreshSend) {
           buildSearchQueries(hist.concat([{ role: 'user', content: text }])),
           new Promise(function (res) { setTimeout(function () { res([]); }, 8000); }),
         ]);
-        for (var gi = 0; gi < (got || []).length; gi++) {
-          if (/^none$/i.test(got[gi])) { skipSearch = true; break; }
-          qs.push(got[gi]);
+        var extra = (got || []).filter(function (q) {
+          return q && !/^none$/i.test(q) && q.length >= 4 && q !== fullQ && q.length <= 80;
+        });
+        if (extra.length) qs = [fullQ, extra[0]];
+      } catch (e) { /* 补词失败不影响主查询 */ }
+    }
+    // 用「完整原句（+可选补词）」并发搜索，结果合并去重
+    try {
+      setStatus('🌐 正在搜索：「' + qs.join('、') + '」…');
+      var rs = await Promise.all(qs.map(function (q, qi) {
+        return fetch('/api/search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q, engine: settings.searchEngine, proxy: settings.proxy, filter_adult: settings.filterAdult !== false, preserve_full: qi === 0 }),
+          signal: controller.signal,
+        }).then(function (r) { return r.json(); }).catch(function () { return { results: [] }; });
+      }));
+      var seen = {};
+      for (var ri = 0; ri < rs.length; ri++) {
+        var list = (rs[ri] && rs[ri].results) || [];
+        for (var si = 0; si < list.length; si++) {
+          if (!seen[list[si].url]) { seen[list[si].url] = 1; sources.push(list[si]); }
         }
-      } catch (e) { qs = []; }
-    }
-    if (!skipSearch) {
-      // 完整搜索：AI 有时会把原句砍成两三字，这里保证用户「完整原句」一定参与搜索
-      const fullQ = text.trim();
-      if (!qs.length) qs = [fullQ];
-      else if (fullQ && fullQ.length > qs[0].length) qs.unshift(fullQ);
-    }
-    // ② 用生成的搜索词并发搜索（最多 2 个词），结果合并去重
-    if (!skipSearch) {
-      try {
-        setStatus('🌐 正在搜索：「' + qs.slice(0, 2).join('、') + '」…');
-        var rs = await Promise.all(qs.slice(0, 2).map(function (q) {
-          return fetch('/api/search', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q, engine: settings.searchEngine, proxy: settings.proxy, filter_adult: settings.filterAdult !== false }),
-            signal: controller.signal,
-          }).then(function (r) { return r.json(); }).catch(function () { return { results: [] }; });
-        }));
-        var seen = {};
-        for (var ri = 0; ri < rs.length; ri++) {
-          var list = (rs[ri] && rs[ri].results) || [];
-          for (var si = 0; si < list.length; si++) {
-            if (!seen[list[si].url]) { seen[list[si].url] = 1; sources.push(list[si]); }
-          }
-        }
-        sources = sources.slice(0, 15);
-        searchUsedQuery = qs.slice(0, 2).join('、');
-      } catch (e) {}
-    }
+      }
+      sources = sources.slice(0, 15);
+      searchUsedQuery = qs.join('、');
+    } catch (e) {}
     if (sources.length) {
       messages.push({ role: 'system', content: '以下是实时网页搜索结果，请结合它们回答并标注引用 [n]：\n' +
         sources.map((s, i) => `[${i+1}] ${s.title}\n${s.url}\n${s.snippet}`).join('\n\n') +
-        '\n（本次搜索关键词：' + (searchUsedQuery || '原句') + '，由你结合对话上下文生成）' });
+        '\n（本次搜索关键词：' + (searchUsedQuery || '原句') + '）' });
     }
+    setStatus('');
+  } else if (searchOn && !wantsSearch) {
+    // 总闸开着但用户没表达搜索意图 → 本轮不联网，静默跳过
     setStatus('');
   }
   // 叠加启用的插件（个性化设定，多个同时生效）
@@ -2602,21 +2607,21 @@ async function callChatOnce(msgs, temp) {
   return acc.trim();
 }
 
+// 只做「指代补全」补词：主查询词恒由调用方用「用户完整原句」兜底，
+// 这里最多再给一个补全后的词，绝不用它替代/压缩主查询，避免「只搜几个字」。
 async function buildSearchQueries(histMsgs) {
-  const sys = '你是一个「搜索查询生成器」。请结合上面的对话上下文，把用户最后一句话转换成真正拿去搜索引擎查询的词。\n' +
+  const sys = '你是一个「搜索查询补全器」。系统已经确定要联网搜索，且已用用户的完整原句作为主查询词；\n' +
+    '你只需在用户用了指代词（它/那/这个/那家公司/刚才说的）时，结合上下文给出一个「补全后的完整查询词」作为补充。\n' +
     '必须遵守：\n' +
-    '1) 只输出查询词本身，不要解释、不要引号、不要序号、不要任何多余文字。\n' +
-    '2) 最多 2 个查询词，多个用英文逗号分隔。\n' +
-    '3) 关键：结合上下文把指代补全。例如上文在聊「iPhone 16」，用户问「它多少钱」，你要输出「iPhone 16 价格」；上下文说「特斯拉」，用户问「那家公司的创始人是谁」，输出「特斯拉 创始人」。\n' +
-    '4) 查询词要「完整、具体、可直接搜索」：必须保留核心名词和关键限定词（如"做法/图解/教程/价格/原因"），禁止只提取两三个字的空泛短词（如"体位""好爱"这类碎片）。\n' +
-    '5) 若用户原句本身已是清晰的名词短语或问句，直接输出原句（可略去「帮我查/请问」等指令词），不要精简成碎片；拿不准时宁可保留完整原句也不要砍短。\n' +
-    '6) 如果用户这句话不需要联网查资料（闲聊、写作、翻译、计算、角色扮演、代码解释等），只输出一个词：NONE';
+    '1) 只输出一个查询词本身，不要解释、不要引号、不要序号、不要任何多余文字。\n' +
+    '2) 补全词要完整具体、可直接搜索，保留核心名词与关键限定词，禁止输出两三个字的空泛碎片。\n' +
+    '3) 若用户没用指代、原句已清晰，或你无法给出比原句更好的词，只输出一个词：NONE';
   const msgs = [{ role: 'system', content: sys }].concat(histMsgs);
   const txt = await callChatOnce(msgs, 0.2);
   if (!txt) return [];
   return txt.split(/[,，\n;；]+/).map(function (s) {
     return s.trim().replace(/^[\s"'“”「」『』【】《》\-—*]+|[\s"'“”「」『』【】《》\-—*]+$/g, '');
-  }).filter(function (s) { return s && s.length >= 4 && s.length <= 60; }).slice(0, 2);
+  }).filter(function (s) { return s && s.length >= 4 && s.length <= 80; }).slice(0, 1);
 }
 
 window.send = send;
@@ -2627,7 +2632,7 @@ function openSettings() {
   $('#s-key').value = settings.apiKey || '';
   $('#s-model').value = settings.model || '';
   $('#s-temp').value = settings.temperature;
-  $('#s-engine').value = settings.searchEngine || 'baidu';
+  $('#s-engine').value = settings.searchEngine || 'bing';
   $('#s-filter').checked = settings.filterAdult !== false;
   $('#s-proxy').value = settings.proxy || '';
   $('#s-gtoken').value = settings.githubToken || '';
@@ -2755,7 +2760,7 @@ function applyModelConfig(c) {
   $('#s-key').value = c.apiKey || '';
   $('#s-model').value = c.model || '';
   $('#s-temp').value = (c.temperature != null && !isNaN(c.temperature)) ? c.temperature : 0.7;
-  $('#s-engine').value = c.searchEngine || 'baidu';
+  $('#s-engine').value = c.searchEngine || 'bing';
   $('#s-filter').checked = c.filterAdult !== false;
   $('#s-proxy').value = c.proxy || '';
   $('#s-gtoken').value = c.githubToken || '';
